@@ -349,12 +349,14 @@ void VideoReceiveStream::Start() {
     // Because '/' can't be used inside a field trial parameter, we use ':'
     // instead.
     absl::c_replace(decoded_output_file, ':', '/');
+    if (decoded_output_file.empty()) decoded_output_file = ".";
     if (!decoded_output_file.empty()) {
       char filename_buffer[256];
       rtc::SimpleStringBuilder ssb(filename_buffer);
       ssb << decoded_output_file << "/webrtc_receive_stream_"
           << this->config_.rtp.remote_ssrc << "-" << rtc::TimeMicros()
           << ".ivf";
+      RTC_LOG(LS_WARNING) << "Dumping to " << ssb.str();
       video_decoder = absl::make_unique<FrameDumpingDecoder>(
           std::move(video_decoder), FileWrapper::OpenWriteOnly(ssb.str()));
     }
@@ -491,6 +493,13 @@ void VideoReceiveStream::RequestKeyFrame() {
 void VideoReceiveStream::OnCompleteFrame(
     std::unique_ptr<video_coding::EncodedFrame> frame) {
   RTC_DCHECK_CALLED_SEQUENTIALLY(&network_sequence_checker_);
+
+    RTC_LOG(LS_WARNING) << "TIME_DEC "
+        << int(frame->FrameType()) << ' ' << frame->size() << ' ' << frame->Timestamp() << ' '
+        << frame->video_timing().encode_start_ms << ' ' << frame->video_timing().encode_finish_ms << ' '
+        << frame->video_timing().packetization_finish_ms << ' ' << frame->video_timing().pacer_exit_ms << ' '
+        << frame->video_timing().receive_start_ms << ' ' << frame->video_timing().receive_finish_ms;
+
   // TODO(https://bugs.webrtc.org/9974): Consider removing this workaround.
   int64_t time_now_ms = rtc::TimeMillis();
   if (last_complete_frame_time_ms_ > 0 &&

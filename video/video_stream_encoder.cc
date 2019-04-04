@@ -234,6 +234,8 @@ class VideoStreamEncoder::VideoSourceProxy {
     {
       rtc::CritScope lock(&crit_);
       degradation_preference_ = degradation_preference;
+      RTC_LOG(LS_WARNING) << "SET ADAPT MODE " << int(degradation_preference_);
+
       old_source = source_;
       source_ = source;
       wants = GetActiveSinkWantsInternal();
@@ -498,6 +500,7 @@ VideoStreamEncoder::VideoStreamEncoder(
   RTC_DCHECK(encoder_stats_observer);
   RTC_DCHECK(overuse_detector_);
   RTC_DCHECK_GE(number_of_cores, 1);
+  RTC_LOG(LS_WARNING) << "SET ADAPT MODE " << int(degradation_preference_);
 }
 
 VideoStreamEncoder::~VideoStreamEncoder() {
@@ -552,6 +555,7 @@ void VideoStreamEncoder::SetSource(
       }
     }
     degradation_preference_ = degradation_preference;
+    RTC_LOG(LS_WARNING) << "SET ADAPT MODE " << int(degradation_preference_);
 
     if (encoder_)
       ConfigureQualityScaler(encoder_->GetEncoderInfo());
@@ -1396,6 +1400,11 @@ EncodedImageCallback::Result VideoStreamEncoder::OnEncodedImage(
   RTC_CHECK(videocontenttypehelpers::SetSimulcastId(
       &image_copy.content_type_, static_cast<uint8_t>(spatial_idx + 1)));
 
+  image_copy.timing_.flags = VideoSendTiming::kTriggeredByTimer;
+  RTC_LOG(LS_WARNING) << "TIME_ENC "
+    << int(image_copy._frameType) << ' ' << image_copy.size() << ' ' << image_copy.capture_time_ms_ << ' '
+    << image_copy.Timestamp();
+
   // Encoded is called on whatever thread the real encoder implementation run
   // on. In the case of hardware encoders, there might be several encoders
   // running in parallel on different threads.
@@ -1546,6 +1555,8 @@ void VideoStreamEncoder::AdaptDown(AdaptReason reason) {
       encoder_stats_observer_->GetInputFrameRate(),
       AdaptationRequest::Mode::kAdaptDown};
 
+  RTC_LOG(LS_WARNING) << "ADAPT DOWN " << int(degradation_preference_);
+
   bool downgrade_requested =
       last_adaptation_request_ &&
       last_adaptation_request_->mode_ == AdaptationRequest::Mode::kAdaptDown;
@@ -1654,6 +1665,7 @@ void VideoStreamEncoder::AdaptUp(AdaptReason reason) {
       return;
     }
   }
+  RTC_LOG(LS_WARNING) << "ADAPT UP " << int(degradation_preference_);
 
   switch (degradation_preference_) {
     case DegradationPreference::BALANCED: {

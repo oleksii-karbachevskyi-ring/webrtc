@@ -1801,6 +1801,7 @@ WebRtcVideoChannel::WebRtcVideoSendStream::GetDegradationPreference() const {
   // |this| acts like a VideoSource to make sure SinkWants are handled on the
   // correct thread.
   webrtc::DegradationPreference degradation_preference;
+  RTC_LOG(LS_WARNING) << "DEGRA " << int(rtp_parameters_.degradation_preference);
   if (rtp_parameters_.degradation_preference !=
       webrtc::DegradationPreference::BALANCED) {
     // If the degradationPreference is different from the default value, assume
@@ -1819,6 +1820,8 @@ WebRtcVideoChannel::WebRtcVideoSendStream::GetDegradationPreference() const {
     // the behavior for any project expecting MAINTAIN_FRAMERATE by default.
     degradation_preference = webrtc::DegradationPreference::MAINTAIN_FRAMERATE;
   }
+  RTC_LOG(LS_WARNING) << "FORCING DEGRA " << int(webrtc::DegradationPreference::MAINTAIN_RESOLUTION);
+  degradation_preference = webrtc::DegradationPreference::MAINTAIN_RESOLUTION;
   return degradation_preference;
 }
 
