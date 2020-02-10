@@ -16,7 +16,6 @@ import static org.mockito.Matchers.anyInt;
 import static org.mockito.Matchers.anyLong;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
-import static org.robolectric.Shadows.shadowOf;
 
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
@@ -24,8 +23,6 @@ import android.media.MediaFormat;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.Callable;
-import java.util.concurrent.TimeUnit;
 import org.chromium.testing.local.LocalRobolectricTestRunner;
 import org.junit.Before;
 import org.junit.Test;
@@ -34,8 +31,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowSystemClock;
-import org.webrtc.EglBase.Context;
 import org.webrtc.EncodedImage;
 import org.webrtc.EncodedImage.FrameType;
 import org.webrtc.FakeMediaCodecWrapper.State;
@@ -58,7 +53,8 @@ public class HardwareVideoEncoderTest {
       /* startBitrate= */ 10000,
       /* maxFramerate= */ 30,
       /* numberOfSimulcastStreams= */ 1,
-      /* automaticResizeOn= */ true);
+      /* automaticResizeOn= */ true,
+      /* capabilities= */ new VideoEncoder.Capabilities(false /* lossNotification */));
   private static final long POLL_DELAY_MS = 10;
   private static final long DELIVER_ENCODED_IMAGE_DELAY_MS = 10;
 

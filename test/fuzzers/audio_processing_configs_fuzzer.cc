@@ -13,6 +13,7 @@
 
 #include "absl/memory/memory.h"
 #include "api/audio/echo_canceller3_factory.h"
+#include "api/task_queue/default_task_queue_factory.h"
 #include "modules/audio_processing/aec_dump/aec_dump_factory.h"
 #include "modules/audio_processing/include/audio_processing.h"
 #include "rtc_base/arraysize.h"
@@ -92,7 +93,7 @@ std::unique_ptr<AudioProcessing> CreateApm(test::FuzzDataHelper* fuzz_data,
   // Filter out incompatible settings that lead to CHECK failures.
   if ((use_aecm && use_aec) ||      // These settings cause CHECK failure.
       (use_aecm && aec3 && use_ns)  // These settings trigger webrtc:9489.
-      ) {
+  ) {
     return nullptr;
   }
 
@@ -121,6 +122,8 @@ std::unique_ptr<AudioProcessing> CreateApm(test::FuzzDataHelper* fuzz_data,
 #endif
 
   webrtc::AudioProcessing::Config apm_config;
+  apm_config.pipeline.multi_channel_render = true;
+  apm_config.pipeline.multi_channel_capture = true;
   apm_config.echo_canceller.enabled = use_aec || use_aecm;
   apm_config.echo_canceller.mobile_mode = use_aecm;
   apm_config.residual_echo_detector.enabled = red;
@@ -141,13 +144,18 @@ std::unique_ptr<AudioProcessing> CreateApm(test::FuzzDataHelper* fuzz_data,
       use_agc2_adaptive_digital_saturation_protector;
   apm_config.noise_suppression.enabled = use_ns;
   apm_config.voice_detection.enabled = use_vad;
+  apm_config.level_estimation.enabled = use_le;
   apm->ApplyConfig(apm_config);
-
-  apm->level_estimator()->Enable(use_le);
-  apm->voice_detection()->Enable(use_vad);
 
   return apm;
 }
+
+TaskQueueFactory* GetTaskQueueFactory() {
+  static TaskQueueFactory* const factory =
+      CreateDefaultTaskQueueFactory().release();
+  return factory;
+}
+
 }  // namespace
 
 void FuzzOneInput(const uint8_t* data, size_t size) {
@@ -159,9 +167,9 @@ void FuzzOneInput(const uint8_t* data, size_t size) {
   // for field_trial.h. Hence it's created here and not in CreateApm.
   std::string field_trial_string = "";
 
-  std::unique_ptr<rtc::TaskQueue> worker_queue(
-      new rtc::TaskQueue("rtc-low-prio", rtc::TaskQueue::Priority::LOW));
-  auto apm = CreateApm(&fuzz_data, &field_trial_string, worker_queue.get());
+  rtc::TaskQueue worker_queue(GetTaskQueueFactory()->CreateTaskQueue(
+      "rtc-low-prio", rtc::TaskQueue::Priority::LOW));
+  auto apm = CreateApm(&fuzz_data, &field_trial_string, &worker_queue);
 
   if (apm) {
     FuzzAudioProcessing(&fuzz_data, std::move(apm));

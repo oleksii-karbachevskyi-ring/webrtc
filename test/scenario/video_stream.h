@@ -21,8 +21,8 @@
 #include "test/scenario/call_client.h"
 #include "test/scenario/column_printer.h"
 #include "test/scenario/network_node.h"
-#include "test/scenario/quality_stats.h"
 #include "test/scenario/scenario_config.h"
+#include "test/scenario/video_frame_matcher.h"
 #include "test/test_video_capturer.h"
 
 namespace webrtc {
@@ -39,6 +39,7 @@ class SendVideoStream {
   void Start();
   void Stop();
   void UpdateConfig(std::function<void(VideoStreamConfig*)> modifier);
+  void UpdateActiveLayers(std::vector<bool> active_layers);
 
  private:
   friend class Scenario;
@@ -72,6 +73,7 @@ class ReceiveVideoStream {
   ~ReceiveVideoStream();
   void Start();
   void Stop();
+  VideoReceiveStream::Stats GetStats() const;
 
  private:
   friend class Scenario;

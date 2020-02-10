@@ -24,10 +24,10 @@ MediaChannel::~MediaChannel() {}
 
 void MediaChannel::SetInterface(
     NetworkInterface* iface,
-    webrtc::MediaTransportInterface* media_transport) {
+    const webrtc::MediaTransportConfig& media_transport_config) {
   rtc::CritScope cs(&network_interface_crit_);
   network_interface_ = iface;
-  media_transport_ = media_transport;
+  media_transport_config_ = media_transport_config;
   UpdateDscp();
 }
 
@@ -46,6 +46,8 @@ void MediaChannel::SetFrameDecryptor(
     rtc::scoped_refptr<webrtc::FrameDecryptorInterface> frame_decryptor) {
   // Placeholder should be pure virtual once internal supports it.
 }
+
+void MediaChannel::SetVideoCodecSwitchingEnabled(bool enabled) {}
 
 MediaSenderInfo::MediaSenderInfo() = default;
 MediaSenderInfo::~MediaSenderInfo() = default;

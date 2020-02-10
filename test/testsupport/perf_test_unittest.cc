@@ -15,6 +15,7 @@
 #include <string>
 
 #include "test/gtest.h"
+#include "test/testsupport/rtc_expect_death.h"
 
 namespace {
 
@@ -71,7 +72,7 @@ class PerfTest : public ::testing::Test {
 #define MAYBE_TestPrintResult TestPrintResult
 #endif
 TEST_F(PerfTest, MAYBE_TestPrintResult) {
-  testing::internal::CaptureStdout();
+  ::testing::internal::CaptureStdout();
   std::string expected;
 
   expected += "RESULT measurementmodifier: trace= 42 units\n";
@@ -87,7 +88,7 @@ TEST_F(PerfTest, MAYBE_TestPrintResult) {
   expected += "RESULT foobar: baz_vl= [1,2,3] units\n";
   PrintResultList("foo", "bar", "baz_vl", kListOfScalars, "units", false);
 
-  EXPECT_EQ(expected, testing::internal::GetCapturedStdout());
+  EXPECT_EQ(expected, ::testing::internal::GetCapturedStdout());
 }
 
 TEST_F(PerfTest, TestGetPerfResultsJSON) {
@@ -113,16 +114,18 @@ TEST_F(PerfDeathTest, TestFiniteResultError) {
   const double kNan = std::numeric_limits<double>::quiet_NaN();
   const double kInf = std::numeric_limits<double>::infinity();
 
-  EXPECT_DEATH(PrintResult("a", "b", "c", kNan, "d", false), "finit");
-  EXPECT_DEATH(PrintResult("a", "b", "c", kInf, "d", false), "finit");
+  RTC_EXPECT_DEATH(PrintResult("a", "b", "c", kNan, "d", false), "finit");
+  RTC_EXPECT_DEATH(PrintResult("a", "b", "c", kInf, "d", false), "finit");
 
-  EXPECT_DEATH(PrintResultMeanAndError("a", "b", "c", kNan, 1, "d", false), "");
-  EXPECT_DEATH(PrintResultMeanAndError("a", "b", "c", 1, kInf, "d", false), "");
+  RTC_EXPECT_DEATH(PrintResultMeanAndError("a", "b", "c", kNan, 1, "d", false),
+                   "");
+  RTC_EXPECT_DEATH(PrintResultMeanAndError("a", "b", "c", 1, kInf, "d", false),
+                   "");
 
   const double kNanList[] = {kNan, kNan};
-  EXPECT_DEATH(PrintResultList("a", "b", "c", kNanList, "d", false), "");
+  RTC_EXPECT_DEATH(PrintResultList("a", "b", "c", kNanList, "d", false), "");
   const double kInfList[] = {0, kInf};
-  EXPECT_DEATH(PrintResultList("a", "b", "c", kInfList, "d", false), "");
+  RTC_EXPECT_DEATH(PrintResultList("a", "b", "c", kInfList, "d", false), "");
 }
 #endif
 

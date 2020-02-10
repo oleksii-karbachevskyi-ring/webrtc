@@ -13,6 +13,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
 #include <memory>
 
 #include "modules/video_capture/video_capture_defines.h"
@@ -35,7 +36,7 @@ class VideoCaptureModuleV4L2 : public VideoCaptureImpl {
  private:
   enum { kNoOfV4L2Bufffers = 4 };
 
-  static bool CaptureThread(void*);
+  static void CaptureThread(void*);
   bool CaptureProcess();
   bool AllocateVideoBuffers();
   bool DeAllocateVideoBuffers();
@@ -43,7 +44,7 @@ class VideoCaptureModuleV4L2 : public VideoCaptureImpl {
   // TODO(pbos): Stop using unique_ptr and resetting the thread.
   std::unique_ptr<rtc::PlatformThread> _captureThread;
   rtc::CriticalSection _captureCritSect;
-
+  bool quit_ RTC_GUARDED_BY(_captureCritSect);
   int32_t _deviceId;
   int32_t _deviceFd;
 

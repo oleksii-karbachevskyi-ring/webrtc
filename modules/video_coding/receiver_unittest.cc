@@ -7,7 +7,10 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include "modules/video_coding/receiver.h"
+
 #include <string.h>
+
 #include <cstdint>
 #include <memory>
 #include <queue>
@@ -16,7 +19,6 @@
 #include "modules/video_coding/encoded_frame.h"
 #include "modules/video_coding/jitter_buffer_common.h"
 #include "modules/video_coding/packet.h"
-#include "modules/video_coding/receiver.h"
 #include "modules/video_coding/test/stream_generator.h"
 #include "modules/video_coding/timing.h"
 #include "rtc_base/checks.h"
@@ -35,7 +37,7 @@ class TestVCMReceiver : public ::testing::Test {
         new StreamGenerator(0, clock_->TimeInMilliseconds()));
   }
 
-  virtual void SetUp() { receiver_.Reset(); }
+  virtual void SetUp() {}
 
   int32_t InsertPacket(int index) {
     VCMPacket packet;
@@ -87,8 +89,6 @@ class TestVCMReceiver : public ::testing::Test {
 };
 
 TEST_F(TestVCMReceiver, NonDecodableDuration_Empty) {
-  // Enable NACK and with no RTT thresholds for disabling retransmission delay.
-  receiver_.SetNackMode(kNack, -1, -1);
   const size_t kMaxNackListSize = 1000;
   const int kMaxPacketAgeToNack = 1000;
   const int kMaxNonDecodableDuration = 500;
@@ -105,8 +105,6 @@ TEST_F(TestVCMReceiver, NonDecodableDuration_Empty) {
 }
 
 TEST_F(TestVCMReceiver, NonDecodableDuration_NoKeyFrame) {
-  // Enable NACK and with no RTT thresholds for disabling retransmission delay.
-  receiver_.SetNackMode(kNack, -1, -1);
   const size_t kMaxNackListSize = 1000;
   const int kMaxPacketAgeToNack = 1000;
   const int kMaxNonDecodableDuration = 500;
@@ -122,8 +120,6 @@ TEST_F(TestVCMReceiver, NonDecodableDuration_NoKeyFrame) {
 }
 
 TEST_F(TestVCMReceiver, NonDecodableDuration_OneIncomplete) {
-  // Enable NACK and with no RTT thresholds for disabling retransmission delay.
-  receiver_.SetNackMode(kNack, -1, -1);
   const size_t kMaxNackListSize = 1000;
   const int kMaxPacketAgeToNack = 1000;
   const int kMaxNonDecodableDuration = 500;
@@ -152,8 +148,6 @@ TEST_F(TestVCMReceiver, NonDecodableDuration_OneIncomplete) {
 }
 
 TEST_F(TestVCMReceiver, NonDecodableDuration_NoTrigger) {
-  // Enable NACK and with no RTT thresholds for disabling retransmission delay.
-  receiver_.SetNackMode(kNack, -1, -1);
   const size_t kMaxNackListSize = 1000;
   const int kMaxPacketAgeToNack = 1000;
   const int kMaxNonDecodableDuration = 500;
@@ -184,8 +178,6 @@ TEST_F(TestVCMReceiver, NonDecodableDuration_NoTrigger) {
 }
 
 TEST_F(TestVCMReceiver, NonDecodableDuration_NoTrigger2) {
-  // Enable NACK and with no RTT thresholds for disabling retransmission delay.
-  receiver_.SetNackMode(kNack, -1, -1);
   const size_t kMaxNackListSize = 1000;
   const int kMaxPacketAgeToNack = 1000;
   const int kMaxNonDecodableDuration = 500;
@@ -216,8 +208,6 @@ TEST_F(TestVCMReceiver, NonDecodableDuration_NoTrigger2) {
 }
 
 TEST_F(TestVCMReceiver, NonDecodableDuration_KeyFrameAfterIncompleteFrames) {
-  // Enable NACK and with no RTT thresholds for disabling retransmission delay.
-  receiver_.SetNackMode(kNack, -1, -1);
   const size_t kMaxNackListSize = 1000;
   const int kMaxPacketAgeToNack = 1000;
   const int kMaxNonDecodableDuration = 500;
@@ -277,7 +267,7 @@ class SimulatedClockWithFrames : public SimulatedClock {
     bool frame_injected = false;
     while (!timestamps_.empty() &&
            timestamps_.front().arrive_time <= end_time) {
-      RTC_DCHECK(timestamps_.front().arrive_time >= start_time);
+      RTC_DCHECK_GE(timestamps_.front().arrive_time, start_time);
 
       SimulatedClock::AdvanceTimeMicroseconds(timestamps_.front().arrive_time -
                                               TimeInMicroseconds());
@@ -305,7 +295,7 @@ class SimulatedClockWithFrames : public SimulatedClock {
                  size_t size) {
     int64_t previous_arrive_timestamp = 0;
     for (size_t i = 0; i < size; i++) {
-      RTC_CHECK(arrive_timestamps[i] >= previous_arrive_timestamp);
+      RTC_CHECK_GE(arrive_timestamps[i], previous_arrive_timestamp);
       timestamps_.push(TimestampPair(arrive_timestamps[i] * 1000,
                                      render_timestamps[i] * 1000));
       previous_arrive_timestamp = arrive_timestamps[i];
@@ -388,7 +378,7 @@ class VCMReceiverTimingTest : public ::testing::Test {
             std::unique_ptr<EventWrapper>(
                 new FrameInjectEvent(&clock_, true))) {}
 
-  virtual void SetUp() { receiver_.Reset(); }
+  virtual void SetUp() {}
 
   SimulatedClockWithFrames clock_;
   StreamGenerator stream_generator_;
@@ -466,7 +456,7 @@ TEST_F(VCMReceiverTimingTest, FrameForDecodingPreferLateDecoding) {
   int render_delay_ms;
   int max_decode_ms;
   int dummy;
-  timing_.GetTimings(&dummy, &max_decode_ms, &dummy, &dummy, &dummy, &dummy,
+  timing_.GetTimings(&max_decode_ms, &dummy, &dummy, &dummy, &dummy,
                      &render_delay_ms);
 
   // Construct test samples.

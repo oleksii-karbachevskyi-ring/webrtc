@@ -12,6 +12,7 @@
 #define RTC_BASE_TASK_QUEUE_H_
 
 #include <stdint.h>
+
 #include <memory>
 #include <utility>
 
@@ -61,7 +62,7 @@ namespace rtc {
 //       int count_ = 0;
 //     };
 //     ...
-//     queue_.PostDelayedTask(absl::make_unique<TimerTask>(), 1000);
+//     queue_.PostDelayedTask(std::make_unique<TimerTask>(), 1000);
 //
 // For more examples, see task_queue_unittests.cc.
 //
@@ -80,8 +81,6 @@ class RTC_LOCKABLE RTC_EXPORT TaskQueue {
 
   explicit TaskQueue(std::unique_ptr<webrtc::TaskQueueBase,
                                      webrtc::TaskQueueDeleter> task_queue);
-  explicit TaskQueue(const char* queue_name,
-                     Priority priority = Priority::NORMAL);
   ~TaskQueue();
 
   // Used for DCHECKing the current queue.

@@ -14,10 +14,10 @@
 #include <list>
 #include <string>
 
+#include "absl/types/optional.h"
 #include "api/call/audio_sink.h"
 #include "api/notifier.h"
 #include "pc/channel.h"
-#include "pc/playout_latency_interface.h"
 #include "rtc_base/critical_section.h"
 #include "rtc_base/message_handler.h"
 
@@ -38,8 +38,10 @@ class RemoteAudioSource : public Notifier<AudioSourceInterface>,
 
   // Register and unregister remote audio source with the underlying media
   // engine.
-  void Start(cricket::VoiceMediaChannel* media_channel, uint32_t ssrc);
-  void Stop(cricket::VoiceMediaChannel* media_channel, uint32_t ssrc);
+  void Start(cricket::VoiceMediaChannel* media_channel,
+             absl::optional<uint32_t> ssrc);
+  void Stop(cricket::VoiceMediaChannel* media_channel,
+            absl::optional<uint32_t> ssrc);
 
   // MediaSourceInterface implementation.
   MediaSourceInterface::SourceState state() const override;
@@ -47,8 +49,6 @@ class RemoteAudioSource : public Notifier<AudioSourceInterface>,
 
   // AudioSourceInterface implementation.
   void SetVolume(double volume) override;
-  void SetLatency(double latency) override;
-  double GetLatency() const override;
   void RegisterAudioObserver(AudioObserver* observer) override;
   void UnregisterAudioObserver(AudioObserver* observer) override;
 
@@ -72,9 +72,6 @@ class RemoteAudioSource : public Notifier<AudioSourceInterface>,
   rtc::CriticalSection sink_lock_;
   std::list<AudioTrackSinkInterface*> sinks_;
   SourceState state_;
-  // Allows to thread safely change playout latency. Handles caching cases if
-  // |SetLatency| is called before start.
-  rtc::scoped_refptr<PlayoutLatencyInterface> latency_;
 };
 
 }  // namespace webrtc

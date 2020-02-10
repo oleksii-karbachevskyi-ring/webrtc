@@ -7,6 +7,8 @@
  *  in the file PATENTS.  All contributing project authors may
  *  be found in the AUTHORS file in the root of the source tree.
  */
+#include "rtc_base/message_queue.h"
+
 #include <string>
 #include <utility>
 
@@ -14,7 +16,6 @@
 #include "rtc_base/atomic_ops.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/message_queue.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/time_utils.h"
 #include "rtc_base/trace_event.h"
@@ -506,8 +507,8 @@ void MessageQueue::ClearInternal(MessageHandler* phandler,
 }
 
 void MessageQueue::Dispatch(Message* pmsg) {
-  TRACE_EVENT2("webrtc", "MessageQueue::Dispatch", "src_file_and_line",
-               pmsg->posted_from.file_and_line(), "src_func",
+  TRACE_EVENT2("webrtc", "MessageQueue::Dispatch", "src_file",
+               pmsg->posted_from.file_name(), "src_func",
                pmsg->posted_from.function_name());
   int64_t start_time = TimeMillis();
   pmsg->phandler->OnMessage(pmsg);

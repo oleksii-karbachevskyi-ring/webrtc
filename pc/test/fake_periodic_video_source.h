@@ -13,7 +13,6 @@
 
 #include <memory>
 
-#include "absl/memory/memory.h"
 #include "api/video/video_source_interface.h"
 #include "media/base/fake_frame_source.h"
 #include "media/base/video_broadcaster.h"
@@ -44,9 +43,9 @@ class FakePeriodicVideoSource final
             config.height,
             config.frame_interval_ms * rtc::kNumMicrosecsPerMillisec,
             config.timestamp_offset_ms * rtc::kNumMicrosecsPerMillisec),
-        task_queue_(absl::make_unique<TaskQueueForTest>(
+        task_queue_(std::make_unique<TaskQueueForTest>(
             "FakePeriodicVideoTrackSource")) {
-    thread_checker_.DetachFromThread();
+    thread_checker_.Detach();
     frame_source_.SetRotation(config.rotation);
 
     TimeDelta frame_interval = TimeDelta::ms(config.frame_interval_ms);
@@ -61,13 +60,13 @@ class FakePeriodicVideoSource final
   }
 
   void RemoveSink(rtc::VideoSinkInterface<webrtc::VideoFrame>* sink) override {
-    RTC_DCHECK(thread_checker_.CalledOnValidThread());
+    RTC_DCHECK(thread_checker_.IsCurrent());
     broadcaster_.RemoveSink(sink);
   }
 
   void AddOrUpdateSink(rtc::VideoSinkInterface<webrtc::VideoFrame>* sink,
                        const rtc::VideoSinkWants& wants) override {
-    RTC_DCHECK(thread_checker_.CalledOnValidThread());
+    RTC_DCHECK(thread_checker_.IsCurrent());
     broadcaster_.AddOrUpdateSink(sink, wants);
   }
 

@@ -12,6 +12,7 @@
 #define CALL_VIDEO_SEND_STREAM_H_
 
 #include <stdint.h>
+
 #include <map>
 #include <string>
 #include <vector>
@@ -19,7 +20,6 @@
 #include "absl/types/optional.h"
 #include "api/call/transport.h"
 #include "api/crypto/crypto_options.h"
-#include "api/media_transport_interface.h"
 #include "api/rtp_parameters.h"
 #include "api/video/video_content_type.h"
 #include "api/video/video_frame.h"
@@ -28,6 +28,8 @@
 #include "api/video/video_stream_encoder_settings.h"
 #include "api/video_codecs/video_encoder_config.h"
 #include "call/rtp_config.h"
+#include "common_video/include/quality_limitation_reason.h"
+#include "modules/rtp_rtcp/include/report_block_data.h"
 #include "modules/rtp_rtcp/include/rtcp_statistics.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 
@@ -53,9 +55,13 @@ class VideoSendStream {
     int retransmit_bitrate_bps = 0;
     int avg_delay_ms = 0;
     int max_delay_ms = 0;
+    uint64_t total_packet_send_delay_ms = 0;
     StreamDataCounters rtp_stats;
     RtcpPacketTypeCounter rtcp_packet_type_counts;
     RtcpStatistics rtcp_stats;
+    // A snapshot of the most recent Report Block with additional data of
+    // interest to statistics. Used to implement RTCRemoteInboundRtpStreamStats.
+    absl::optional<ReportBlockData> report_block_data;
   };
 
   struct Stats {
@@ -68,6 +74,10 @@ class VideoSendStream {
     int avg_encode_time_ms = 0;
     int encode_usage_percent = 0;
     uint32_t frames_encoded = 0;
+    // https://w3c.github.io/webrtc-stats/#dom-rtcoutboundrtpstreamstats-totalencodetime
+    uint64_t total_encode_time_ms = 0;
+    // https://w3c.github.io/webrtc-stats/#dom-rtcoutboundrtpstreamstats-totalencodedbytestarget
+    uint64_t total_encoded_bytes_target = 0;
     uint32_t frames_dropped_by_capturer = 0;
     uint32_t frames_dropped_by_encoder_queue = 0;
     uint32_t frames_dropped_by_rate_limiter = 0;
@@ -83,6 +93,13 @@ class VideoSendStream {
     bool cpu_limited_resolution = false;
     bool bw_limited_framerate = false;
     bool cpu_limited_framerate = false;
+    // https://w3c.github.io/webrtc-stats/#dom-rtcoutboundrtpstreamstats-qualitylimitationreason
+    QualityLimitationReason quality_limitation_reason =
+        QualityLimitationReason::kNone;
+    // https://w3c.github.io/webrtc-stats/#dom-rtcoutboundrtpstreamstats-qualitylimitationdurations
+    std::map<QualityLimitationReason, int64_t> quality_limitation_durations_ms;
+    // https://w3c.github.io/webrtc-stats/#dom-rtcoutboundrtpstreamstats-qualitylimitationresolutionchanges
+    uint32_t quality_limitation_resolution_changes = 0;
     // Total number of times resolution as been requested to be changed due to
     // CPU/quality adaptation.
     int number_of_cpu_adapt_changes = 0;
@@ -98,7 +115,6 @@ class VideoSendStream {
    public:
     Config() = delete;
     Config(Config&&);
-    Config(Transport* send_transport, MediaTransportInterface* media_transport);
     explicit Config(Transport* send_transport);
 
     Config& operator=(Config&&);
@@ -111,17 +127,15 @@ class VideoSendStream {
 
     std::string ToString() const;
 
-    VideoStreamEncoderSettings encoder_settings;
-
     RtpConfig rtp;
+
+    VideoStreamEncoderSettings encoder_settings;
 
     // Time interval between RTCP report for video
     int rtcp_report_interval_ms = 1000;
 
     // Transport for outgoing packets.
     Transport* send_transport = nullptr;
-
-    MediaTransportInterface* media_transport = nullptr;
 
     // Expected delay needed by the renderer, i.e. the frame will be delivered
     // this many milliseconds, if possible, earlier than expected render time.
@@ -139,9 +153,6 @@ class VideoSendStream {
 
     // Enables periodic bandwidth probing in application-limited region.
     bool periodic_alr_bandwidth_probing = false;
-
-    // Track ID as specified during track creation.
-    std::string track_id;
 
     // An optional custom frame encryptor that allows the entire frame to be
     // encrypted in whatever way the caller chooses. This is not required by

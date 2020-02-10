@@ -26,7 +26,7 @@
 #include "rtc_base/numerics/safe_conversions.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/time_utils.h"
-#include "sdk/android/generated_video_jni/jni/MediaCodecVideoDecoder_jni.h"
+#include "sdk/android/generated_video_jni/MediaCodecVideoDecoder_jni.h"
 #include "sdk/android/native_api/jni/java_types.h"
 #include "sdk/android/src/jni/android_media_codec_common.h"
 #include "sdk/android/src/jni/video_frame.h"
@@ -65,7 +65,6 @@ class MediaCodecVideoDecoder : public VideoDecoder, public rtc::MessageHandler {
 
   int32_t Decode(const EncodedImage& inputImage,
                  bool missingFrames,
-                 const CodecSpecificInfo* codecSpecificInfo = NULL,
                  int64_t renderTimeMs = -1) override;
 
   int32_t RegisterDecodeCompleteCallback(
@@ -350,7 +349,6 @@ int32_t MediaCodecVideoDecoder::ProcessHWErrorOnCodecThread() {
 int32_t MediaCodecVideoDecoder::Decode(
     const EncodedImage& inputImage,
     bool missingFrames,
-    const CodecSpecificInfo* codecSpecificInfo,
     int64_t renderTimeMs) {
   if (sw_fallback_required_) {
     ALOGE << "Decode() - fallback to SW codec";

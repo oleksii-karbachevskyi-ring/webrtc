@@ -15,9 +15,9 @@
 #include <memory>
 #include <vector>
 
-#include "absl/memory/memory.h"
 #include "api/video/encoded_image.h"
 #include "api/video_codecs/sdp_video_format.h"
+#include "api/video_codecs/video_encoder.h"
 #include "common_video/libyuv/include/webrtc_libyuv.h"
 #include "modules/video_coding/include/video_codec_interface.h"
 #include "modules/video_coding/include/video_coding_defines.h"
@@ -45,6 +45,9 @@ const int kMinBitrates[kNumberOfSimulcastStreams] = {50, 150, 600};
 const int kTargetBitrates[kNumberOfSimulcastStreams] = {100, 450, 1000};
 const int kDefaultTemporalLayerProfile[3] = {3, 3, 3};
 const int kNoTemporalLayerProfile[3] = {0, 0, 0};
+
+const VideoEncoder::Capabilities kCapabilities(false);
+const VideoEncoder::Settings kSettings(kCapabilities, 1, 1200);
 
 template <typename T>
 void SetExpectedValues3(T value0, T value1, T value2, T* expected_values) {
@@ -74,18 +77,21 @@ class SimulcastTestFixtureImpl::TestEncodedImageCallback
                         const CodecSpecificInfo* codec_specific_info,
                         const RTPFragmentationHeader* fragmentation) override {
     bool is_vp8 = (codec_specific_info->codecType == kVideoCodecVP8);
+    bool is_h264 = (codec_specific_info->codecType == kVideoCodecH264);
     // Only store the base layer.
     if (encoded_image.SpatialIndex().value_or(0) == 0) {
       if (encoded_image._frameType == VideoFrameType::kVideoFrameKey) {
         // TODO(nisse): Why not size() ?
-        encoded_key_frame_.Allocate(encoded_image.capacity());
+        encoded_key_frame_.SetEncodedData(
+            EncodedImageBuffer::Create(encoded_image.capacity()));
         encoded_key_frame_.set_size(encoded_image.size());
         encoded_key_frame_._frameType = VideoFrameType::kVideoFrameKey;
         encoded_key_frame_._completeFrame = encoded_image._completeFrame;
         memcpy(encoded_key_frame_.data(), encoded_image.data(),
                encoded_image.size());
       } else {
-        encoded_frame_.Allocate(encoded_image.capacity());
+        encoded_frame_.SetEncodedData(
+            EncodedImageBuffer::Create(encoded_image.capacity()));
         encoded_frame_.set_size(encoded_image.size());
         memcpy(encoded_frame_.data(), encoded_image.data(),
                encoded_image.size());
@@ -96,6 +102,11 @@ class SimulcastTestFixtureImpl::TestEncodedImageCallback
           codec_specific_info->codecSpecific.VP8.layerSync;
       temporal_layer_[encoded_image.SpatialIndex().value_or(0)] =
           codec_specific_info->codecSpecific.VP8.temporalIdx;
+    } else if (is_h264) {
+      layer_sync_[encoded_image.SpatialIndex().value_or(0)] =
+          codec_specific_info->codecSpecific.H264.base_layer_sync;
+      temporal_layer_[encoded_image.SpatialIndex().value_or(0)] =
+          codec_specific_info->codecSpecific.H264.temporal_idx;
     }
     return Result(Result::OK, encoded_image.Timestamp());
   }
@@ -257,8 +268,9 @@ SimulcastTestFixtureImpl::SimulcastTestFixtureImpl(
     : codec_type_(PayloadStringToCodecType(video_format.name)) {
   encoder_ = encoder_factory->CreateVideoEncoder(video_format);
   decoder_ = decoder_factory->CreateVideoDecoder(video_format);
-  SetUpCodec(codec_type_ == kVideoCodecVP8 ? kDefaultTemporalLayerProfile
-    : kNoTemporalLayerProfile);
+  SetUpCodec((codec_type_ == kVideoCodecVP8 || codec_type_ == kVideoCodecH264)
+                 ? kDefaultTemporalLayerProfile
+                 : kNoTemporalLayerProfile);
 }
 
 SimulcastTestFixtureImpl::~SimulcastTestFixtureImpl() {
@@ -271,11 +283,11 @@ void SimulcastTestFixtureImpl::SetUpCodec(const int* temporal_layer_profile) {
   decoder_->RegisterDecodeCompleteCallback(&decoder_callback_);
   DefaultSettings(&settings_, temporal_layer_profile, codec_type_);
   SetUpRateAllocator();
-  EXPECT_EQ(0, encoder_->InitEncode(&settings_, 1, 1200));
+  EXPECT_EQ(0, encoder_->InitEncode(&settings_, kSettings));
   EXPECT_EQ(0, decoder_->InitDecode(&settings_, 1));
   input_buffer_ = I420Buffer::Create(kDefaultWidth, kDefaultHeight);
   input_buffer_->InitializeData();
-  input_frame_ = absl::make_unique<webrtc::VideoFrame>(
+  input_frame_ = std::make_unique<webrtc::VideoFrame>(
       webrtc::VideoFrame::Builder()
           .set_video_frame_buffer(input_buffer_)
           .set_rotation(webrtc::kVideoRotation_0)
@@ -288,8 +300,10 @@ void SimulcastTestFixtureImpl::SetUpRateAllocator() {
 }
 
 void SimulcastTestFixtureImpl::SetRates(uint32_t bitrate_kbps, uint32_t fps) {
-  encoder_->SetRateAllocation(
-      rate_allocator_->GetAllocation(bitrate_kbps * 1000, fps), fps);
+  encoder_->SetRates(VideoEncoder::RateControlParameters(
+      rate_allocator_->Allocate(
+          VideoBitrateAllocationParameters(bitrate_kbps * 1000, fps)),
+      static_cast<double>(fps)));
 }
 
 void SimulcastTestFixtureImpl::RunActiveStreamsTest(
@@ -322,7 +336,7 @@ void SimulcastTestFixtureImpl::UpdateActiveStreams(
   // allocator has support for updating active streams without a
   // reinitialization, we can just call that here instead.
   SetUpRateAllocator();
-  EXPECT_EQ(0, encoder_->InitEncode(&settings_, 1, 1200));
+  EXPECT_EQ(0, encoder_->InitEncode(&settings_, kSettings));
 }
 
 void SimulcastTestFixtureImpl::ExpectStreams(
@@ -600,7 +614,7 @@ void SimulcastTestFixtureImpl::SwitchingToOneStream(int width, int height) {
   input_buffer_ = I420Buffer::Create(settings_.width, settings_.height);
   input_buffer_->InitializeData();
 
-  input_frame_ = absl::make_unique<webrtc::VideoFrame>(
+  input_frame_ = std::make_unique<webrtc::VideoFrame>(
       webrtc::VideoFrame::Builder()
           .set_video_frame_buffer(input_buffer_)
           .set_rotation(webrtc::kVideoRotation_0)
@@ -616,7 +630,7 @@ void SimulcastTestFixtureImpl::SwitchingToOneStream(int width, int height) {
   settings_.simulcastStream[settings_.numberOfSimulcastStreams - 1].height =
       settings_.height;
   SetUpRateAllocator();
-  EXPECT_EQ(0, encoder_->InitEncode(&settings_, 1, 1200));
+  EXPECT_EQ(0, encoder_->InitEncode(&settings_, kSettings));
 
   // Encode one frame and verify.
   SetRates(kMaxBitrates[0] + kMaxBitrates[1], 30);
@@ -639,13 +653,13 @@ void SimulcastTestFixtureImpl::SwitchingToOneStream(int width, int height) {
   // Start at the lowest bitrate for enabling base stream.
   settings_.startBitrate = kMinBitrates[0];
   SetUpRateAllocator();
-  EXPECT_EQ(0, encoder_->InitEncode(&settings_, 1, 1200));
+  EXPECT_EQ(0, encoder_->InitEncode(&settings_, kSettings));
   SetRates(settings_.startBitrate, 30);
   ExpectStreams(VideoFrameType::kVideoFrameKey, 1);
   // Resize |input_frame_| to the new resolution.
   input_buffer_ = I420Buffer::Create(settings_.width, settings_.height);
   input_buffer_->InitializeData();
-  input_frame_ = absl::make_unique<webrtc::VideoFrame>(
+  input_frame_ = std::make_unique<webrtc::VideoFrame>(
       webrtc::VideoFrame::Builder()
           .set_video_frame_buffer(input_buffer_)
           .set_rotation(webrtc::kVideoRotation_0)
@@ -670,7 +684,7 @@ void SimulcastTestFixtureImpl::TestSwitchingToOneSmallStream() {
 // 3-3-3 pattern: 3 temporal layers for all spatial streams, so same
 // temporal_layer id and layer_sync is expected for all streams.
 void SimulcastTestFixtureImpl::TestSpatioTemporalLayers333PatternEncoder() {
-  EXPECT_EQ(codec_type_, kVideoCodecVP8);
+  bool is_h264 = codec_type_ == kVideoCodecH264;
   TestEncodedImageCallback encoder_callback;
   encoder_->RegisterEncodeCompleteCallback(&encoder_callback);
   SetRates(kMaxBitrates[2], 30);  // To get all three streams.
@@ -681,7 +695,7 @@ void SimulcastTestFixtureImpl::TestSpatioTemporalLayers333PatternEncoder() {
   // First frame: #0.
   EXPECT_EQ(0, encoder_->Encode(*input_frame_, NULL));
   SetExpectedValues3<int>(0, 0, 0, expected_temporal_idx);
-  SetExpectedValues3<bool>(true, true, true, expected_layer_sync);
+  SetExpectedValues3<bool>(!is_h264, !is_h264, !is_h264, expected_layer_sync);
   VerifyTemporalIdxAndSyncForAllSpatialLayers(
       &encoder_callback, expected_temporal_idx, expected_layer_sync, 3);
 
@@ -721,7 +735,7 @@ void SimulcastTestFixtureImpl::TestSpatioTemporalLayers333PatternEncoder() {
   input_frame_->set_timestamp(input_frame_->timestamp() + 3000);
   EXPECT_EQ(0, encoder_->Encode(*input_frame_, NULL));
   SetExpectedValues3<int>(2, 2, 2, expected_temporal_idx);
-  SetExpectedValues3<bool>(false, false, false, expected_layer_sync);
+  SetExpectedValues3<bool>(is_h264, is_h264, is_h264, expected_layer_sync);
   VerifyTemporalIdxAndSyncForAllSpatialLayers(
       &encoder_callback, expected_temporal_idx, expected_layer_sync, 3);
 }
@@ -809,7 +823,7 @@ void SimulcastTestFixtureImpl::TestStrideEncodeDecode() {
   int stride_uv = ((kDefaultWidth + 1) / 2) + 5;
   input_buffer_ = I420Buffer::Create(kDefaultWidth, kDefaultHeight, stride_y,
                                      stride_uv, stride_uv);
-  input_frame_ = absl::make_unique<webrtc::VideoFrame>(
+  input_frame_ = std::make_unique<webrtc::VideoFrame>(
       webrtc::VideoFrame::Builder()
           .set_video_frame_buffer(input_buffer_)
           .set_rotation(webrtc::kVideoRotation_0)
@@ -836,9 +850,9 @@ void SimulcastTestFixtureImpl::TestStrideEncodeDecode() {
   EncodedImage encoded_frame;
   // Only encoding one frame - so will be a key frame.
   encoder_callback.GetLastEncodedKeyFrame(&encoded_frame);
-  EXPECT_EQ(0, decoder_->Decode(encoded_frame, false, NULL, 0));
+  EXPECT_EQ(0, decoder_->Decode(encoded_frame, false, 0));
   encoder_callback.GetLastEncodedFrame(&encoded_frame);
-  decoder_->Decode(encoded_frame, false, NULL, 0);
+  decoder_->Decode(encoded_frame, false, 0);
   EXPECT_EQ(2, decoder_callback.DecodedFrames());
 }
 
@@ -854,14 +868,15 @@ void SimulcastTestFixtureImpl::TestDecodeWidthHeightSet() {
   EXPECT_CALL(encoder_callback, OnEncodedImage(_, _, _))
       .Times(3)
       .WillRepeatedly(
-          testing::Invoke([&](const EncodedImage& encoded_image,
-                              const CodecSpecificInfo* codec_specific_info,
-                              const RTPFragmentationHeader* fragmentation) {
+          ::testing::Invoke([&](const EncodedImage& encoded_image,
+                                const CodecSpecificInfo* codec_specific_info,
+                                const RTPFragmentationHeader* fragmentation) {
             EXPECT_EQ(encoded_image._frameType, VideoFrameType::kVideoFrameKey);
 
             size_t index = encoded_image.SpatialIndex().value_or(0);
             // TODO(nisse): Why not size()
-            encoded_frame[index].Allocate(encoded_image.capacity());
+            encoded_frame[index].SetEncodedData(
+                EncodedImageBuffer::Create(encoded_image.capacity()));
             encoded_frame[index].set_size(encoded_image.size());
             encoded_frame[index]._frameType = encoded_image._frameType;
             encoded_frame[index]._completeFrame = encoded_image._completeFrame;
@@ -873,31 +888,31 @@ void SimulcastTestFixtureImpl::TestDecodeWidthHeightSet() {
   EXPECT_EQ(0, encoder_->Encode(*input_frame_, NULL));
 
   EXPECT_CALL(decoder_callback, Decoded(_, _, _))
-      .WillOnce(testing::Invoke([](VideoFrame& decodedImage,
-                                   absl::optional<int32_t> decode_time_ms,
-                                   absl::optional<uint8_t> qp) {
+      .WillOnce(::testing::Invoke([](VideoFrame& decodedImage,
+                                     absl::optional<int32_t> decode_time_ms,
+                                     absl::optional<uint8_t> qp) {
         EXPECT_EQ(decodedImage.width(), kDefaultWidth / 4);
         EXPECT_EQ(decodedImage.height(), kDefaultHeight / 4);
       }));
-  EXPECT_EQ(0, decoder_->Decode(encoded_frame[0], false, NULL, 0));
+  EXPECT_EQ(0, decoder_->Decode(encoded_frame[0], false, 0));
 
   EXPECT_CALL(decoder_callback, Decoded(_, _, _))
-      .WillOnce(testing::Invoke([](VideoFrame& decodedImage,
-                                   absl::optional<int32_t> decode_time_ms,
-                                   absl::optional<uint8_t> qp) {
+      .WillOnce(::testing::Invoke([](VideoFrame& decodedImage,
+                                     absl::optional<int32_t> decode_time_ms,
+                                     absl::optional<uint8_t> qp) {
         EXPECT_EQ(decodedImage.width(), kDefaultWidth / 2);
         EXPECT_EQ(decodedImage.height(), kDefaultHeight / 2);
       }));
-  EXPECT_EQ(0, decoder_->Decode(encoded_frame[1], false, NULL, 0));
+  EXPECT_EQ(0, decoder_->Decode(encoded_frame[1], false, 0));
 
   EXPECT_CALL(decoder_callback, Decoded(_, _, _))
-      .WillOnce(testing::Invoke([](VideoFrame& decodedImage,
-                                   absl::optional<int32_t> decode_time_ms,
-                                   absl::optional<uint8_t> qp) {
+      .WillOnce(::testing::Invoke([](VideoFrame& decodedImage,
+                                     absl::optional<int32_t> decode_time_ms,
+                                     absl::optional<uint8_t> qp) {
         EXPECT_EQ(decodedImage.width(), kDefaultWidth);
         EXPECT_EQ(decodedImage.height(), kDefaultHeight);
       }));
-  EXPECT_EQ(0, decoder_->Decode(encoded_frame[2], false, NULL, 0));
+  EXPECT_EQ(0, decoder_->Decode(encoded_frame[2], false, 0));
 }
 
 }  // namespace test

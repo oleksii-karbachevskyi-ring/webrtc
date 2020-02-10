@@ -10,16 +10,17 @@
 
 #include "sdk/android/src/jni/audio_device/audio_device_module.h"
 
+#include <memory>
 #include <utility>
 
-#include "absl/memory/memory.h"
-#include "api/task_queue/global_task_queue_factory.h"
+#include "api/task_queue/default_task_queue_factory.h"
+#include "api/task_queue/task_queue_factory.h"
 #include "modules/audio_device/audio_device_buffer.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/ref_counted_object.h"
 #include "rtc_base/thread_checker.h"
-#include "sdk/android/generated_audio_device_module_base_jni/jni/WebRtcAudioManager_jni.h"
+#include "sdk/android/generated_audio_device_module_base_jni/WebRtcAudioManager_jni.h"
 #include "system_wrappers/include/metrics.h"
 
 namespace webrtc {
@@ -63,13 +64,14 @@ class AndroidAudioDeviceModule : public AudioDeviceModule {
         is_stereo_playout_supported_(is_stereo_playout_supported),
         is_stereo_record_supported_(is_stereo_record_supported),
         playout_delay_ms_(playout_delay_ms),
+        task_queue_factory_(CreateDefaultTaskQueueFactory()),
         input_(std::move(audio_input)),
         output_(std::move(audio_output)),
         initialized_(false) {
     RTC_CHECK(input_);
     RTC_CHECK(output_);
     RTC_LOG(INFO) << __FUNCTION__;
-    thread_checker_.DetachFromThread();
+    thread_checker_.Detach();
   }
 
   ~AndroidAudioDeviceModule() override { RTC_LOG(INFO) << __FUNCTION__; }
@@ -88,9 +90,9 @@ class AndroidAudioDeviceModule : public AudioDeviceModule {
 
   int32_t Init() override {
     RTC_LOG(INFO) << __FUNCTION__;
-    RTC_DCHECK(thread_checker_.CalledOnValidThread());
+    RTC_DCHECK(thread_checker_.IsCurrent());
     audio_device_buffer_ =
-        absl::make_unique<AudioDeviceBuffer>(&GlobalTaskQueueFactory());
+        std::make_unique<AudioDeviceBuffer>(task_queue_factory_.get());
     AttachAudioBuffer();
     if (initialized_) {
       return 0;
@@ -119,11 +121,11 @@ class AndroidAudioDeviceModule : public AudioDeviceModule {
     RTC_LOG(INFO) << __FUNCTION__;
     if (!initialized_)
       return 0;
-    RTC_DCHECK(thread_checker_.CalledOnValidThread());
+    RTC_DCHECK(thread_checker_.IsCurrent());
     int32_t err = input_->Terminate();
     err |= output_->Terminate();
     initialized_ = false;
-    thread_checker_.DetachFromThread();
+    thread_checker_.Detach();
     audio_device_buffer_.reset(nullptr);
     RTC_DCHECK_EQ(err, 0);
     return err;
@@ -582,6 +584,12 @@ class AndroidAudioDeviceModule : public AudioDeviceModule {
     return result;
   }
 
+  int32_t GetPlayoutUnderrunCount() const override {
+    if (!initialized_)
+      return -1;
+    return output_->GetPlayoutUnderrunCount();
+  }
+
   int32_t AttachAudioBuffer() {
     RTC_LOG(INFO) << __FUNCTION__;
     output_->AttachAudioBuffer(audio_device_buffer_.get());
@@ -596,6 +604,7 @@ class AndroidAudioDeviceModule : public AudioDeviceModule {
   const bool is_stereo_playout_supported_;
   const bool is_stereo_record_supported_;
   const uint16_t playout_delay_ms_;
+  const std::unique_ptr<TaskQueueFactory> task_queue_factory_;
   const std::unique_ptr<AudioInput> input_;
   const std::unique_ptr<AudioOutput> output_;
   std::unique_ptr<AudioDeviceBuffer> audio_device_buffer_;

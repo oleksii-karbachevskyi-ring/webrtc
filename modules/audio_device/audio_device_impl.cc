@@ -13,7 +13,6 @@
 #include <stddef.h>
 
 #include "api/scoped_refptr.h"
-#include "api/task_queue/global_task_queue_factory.h"
 #include "modules/audio_device/audio_device_config.h"  // IWYU pragma: keep
 #include "modules/audio_device/audio_device_generic.h"
 #include "rtc_base/checks.h"
@@ -45,7 +44,7 @@
 #include "modules/audio_device/linux/audio_device_pulse_linux.h"
 #endif
 #elif defined(WEBRTC_IOS)
-#include "modules/audio_device/ios/audio_device_ios.h"
+#include "sdk/objc/native/src/audio/audio_device_ios.h"
 #elif defined(WEBRTC_MAC)
 #include "modules/audio_device/mac/audio_device_mac.h"
 #endif
@@ -70,13 +69,6 @@
   }
 
 namespace webrtc {
-
-rtc::scoped_refptr<AudioDeviceModule> AudioDeviceModule::Create(
-    AudioLayer audio_layer) {
-  RTC_LOG(INFO) << __FUNCTION__;
-  return AudioDeviceModule::CreateForTest(audio_layer,
-                                          &GlobalTaskQueueFactory());
-}
 
 rtc::scoped_refptr<AudioDeviceModule> AudioDeviceModule::Create(
     AudioLayer audio_layer,
@@ -287,7 +279,7 @@ int32_t AudioDeviceModuleImpl::CreatePlatformSpecificObjects() {
 // iOS ADM implementation.
 #if defined(WEBRTC_IOS)
   if (audio_layer == kPlatformDefaultAudio) {
-    audio_device_.reset(new AudioDeviceIOS());
+    audio_device_.reset(new ios_adm::AudioDeviceIOS());
     RTC_LOG(INFO) << "iPhone Audio APIs will be utilized.";
   }
 // END #if defined(WEBRTC_IOS)
@@ -916,6 +908,14 @@ int32_t AudioDeviceModuleImpl::EnableBuiltInNS(bool enable) {
   int32_t ok = audio_device_->EnableBuiltInNS(enable);
   RTC_LOG(INFO) << "output: " << ok;
   return ok;
+}
+
+int32_t AudioDeviceModuleImpl::GetPlayoutUnderrunCount() const {
+  RTC_LOG(INFO) << __FUNCTION__;
+  CHECKinitialized_();
+  int32_t underrunCount = audio_device_->GetPlayoutUnderrunCount();
+  RTC_LOG(INFO) << "output: " << underrunCount;
+  return underrunCount;
 }
 
 #if defined(WEBRTC_IOS)

@@ -13,12 +13,12 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
 #include <map>
 #include <memory>
 #include <utility>
 #include <vector>
 
-#include "absl/memory/memory.h"
 #include "absl/types/optional.h"
 #include "api/task_queue/queued_task.h"
 #include "api/task_queue/task_queue_base.h"
@@ -36,7 +36,7 @@
 #include "rtc_base/buffer.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/constructor_magic.h"
-#include "rtc_base/sequenced_task_checker.h"
+#include "rtc_base/synchronization/sequence_checker.h"
 #include "rtc_base/thread_annotations.h"
 #include "rtc_base/thread_checker.h"
 #include "test/testsupport/frame_reader.h"
@@ -75,7 +75,7 @@ class VideoProcessor {
   void ProcessFrame();
 
   // Updates the encoder with target rates. Must be called at least once.
-  void SetRates(size_t bitrate_kbps, size_t framerate_fps);
+  void SetRates(size_t bitrate_kbps, double framerate_fps);
 
  private:
   class VideoProcessorEncodeCompleteCallback
@@ -97,7 +97,7 @@ class VideoProcessor {
 
       // Post the callback to the right task queue, if needed.
       if (!task_queue_->IsCurrent()) {
-        task_queue_->PostTask(absl::make_unique<EncodeCallbackTask>(
+        task_queue_->PostTask(std::make_unique<EncodeCallbackTask>(
             video_processor_, encoded_image, codec_specific_info));
         return Result(Result::OK, 0);
       }
@@ -193,7 +193,7 @@ class VideoProcessor {
   VideoDecoderList* const decoders_;
   const std::unique_ptr<VideoBitrateAllocator> bitrate_allocator_;
   VideoBitrateAllocation bitrate_allocation_ RTC_GUARDED_BY(sequence_checker_);
-  uint32_t framerate_fps_ RTC_GUARDED_BY(sequence_checker_);
+  double framerate_fps_ RTC_GUARDED_BY(sequence_checker_);
 
   // Adapters for the codec callbacks.
   VideoProcessorEncodeCompleteCallback encode_callback_;
@@ -250,7 +250,7 @@ class VideoProcessor {
   int64_t post_encode_time_ns_ RTC_GUARDED_BY(sequence_checker_);
 
   // This class must be operated on a TaskQueue.
-  rtc::SequencedTaskChecker sequence_checker_;
+  SequenceChecker sequence_checker_;
 
   RTC_DISALLOW_COPY_AND_ASSIGN(VideoProcessor);
 };

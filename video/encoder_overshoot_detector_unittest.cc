@@ -9,6 +9,7 @@
  */
 
 #include "video/encoder_overshoot_detector.h"
+
 #include "api/units/data_rate.h"
 #include "rtc_base/fake_clock.h"
 #include "rtc_base/time_utils.h"
@@ -39,16 +40,14 @@ class EncoderOvershootDetectorTest : public ::testing::Test {
     if (rtc::TimeMillis() == 0) {
       // Encode a first frame which by definition has no overuse factor.
       detector_.OnEncodedFrame(frame_size_bytes, rtc::TimeMillis());
-      clock_.AdvanceTimeMicros(rtc::kNumMicrosecsPerSec /
-                               target_framerate_fps_);
+      clock_.AdvanceTime(TimeDelta::seconds(1) / target_framerate_fps_);
     }
 
     int64_t runtime_us = 0;
     while (runtime_us < test_duration_ms * 1000) {
       detector_.OnEncodedFrame(frame_size_bytes, rtc::TimeMillis());
       runtime_us += rtc::kNumMicrosecsPerSec / target_framerate_fps_;
-      clock_.AdvanceTimeMicros(rtc::kNumMicrosecsPerSec /
-                               target_framerate_fps_);
+      clock_.AdvanceTime(TimeDelta::seconds(1) / target_framerate_fps_);
     }
 
     // At constant utilization, both network and media utilization should be
@@ -82,7 +81,7 @@ TEST_F(EncoderOvershootDetectorTest, NoUtilizationIfNoRate) {
       detector_.GetNetworkRateUtilizationFactor(rtc::TimeMillis()).has_value());
 
   detector_.OnEncodedFrame(frame_size_bytes, rtc::TimeMillis());
-  clock_.AdvanceTimeMicros(rtc::kNumMicrosecsPerMillisec * time_interval_ms);
+  clock_.AdvanceTime(TimeDelta::ms(time_interval_ms));
   EXPECT_TRUE(
       detector_.GetNetworkRateUtilizationFactor(rtc::TimeMillis()).has_value());
 }
@@ -148,7 +147,7 @@ TEST_F(EncoderOvershootDetectorTest, PartialOvershoot) {
   int i = 0;
   while (runtime_us < kWindowSizeMs * rtc::kNumMicrosecsPerMillisec) {
     runtime_us += rtc::kNumMicrosecsPerSec / target_framerate_fps_;
-    clock_.AdvanceTimeMicros(rtc::kNumMicrosecsPerSec / target_framerate_fps_);
+    clock_.AdvanceTime(TimeDelta::seconds(1) / target_framerate_fps_);
     int frame_size_bytes = (i++ % 4 < 2) ? (ideal_frame_size_bytes * 120) / 100
                                          : (ideal_frame_size_bytes * 80) / 100;
     detector_.OnEncodedFrame(frame_size_bytes, rtc::TimeMillis());

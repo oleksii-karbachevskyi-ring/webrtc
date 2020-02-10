@@ -45,11 +45,14 @@
 @synthesize shouldPruneTurnPorts = _shouldPruneTurnPorts;
 @synthesize shouldPresumeWritableWhenFullyRelayed =
     _shouldPresumeWritableWhenFullyRelayed;
+@synthesize shouldSurfaceIceCandidatesOnIceTransportTypeChanged =
+    _shouldSurfaceIceCandidatesOnIceTransportTypeChanged;
 @synthesize iceCheckMinInterval = _iceCheckMinInterval;
 @synthesize iceRegatherIntervalRange = _iceRegatherIntervalRange;
 @synthesize sdpSemantics = _sdpSemantics;
 @synthesize turnCustomizer = _turnCustomizer;
 @synthesize activeResetSrtpParams = _activeResetSrtpParams;
+@synthesize allowCodecSwitching = _allowCodecSwitching;
 @synthesize useMediaTransport = _useMediaTransport;
 @synthesize useMediaTransportForDataChannels = _useMediaTransportForDataChannels;
 @synthesize cryptoOptions = _cryptoOptions;
@@ -109,6 +112,8 @@
     _shouldPruneTurnPorts = config.prune_turn_ports;
     _shouldPresumeWritableWhenFullyRelayed =
         config.presume_writable_when_fully_relayed;
+    _shouldSurfaceIceCandidatesOnIceTransportTypeChanged =
+        config.surface_ice_candidates_on_ice_transport_type_changed;
     if (config.ice_check_min_interval) {
       _iceCheckMinInterval =
           [NSNumber numberWithInt:*config.ice_check_min_interval];
@@ -134,6 +139,7 @@
     }
     _rtcpAudioReportIntervalMs = config.audio_rtcp_report_interval_ms();
     _rtcpVideoReportIntervalMs = config.video_rtcp_report_interval_ms();
+    _allowCodecSwitching = config.allow_codec_switching.value_or(false);
   }
   return self;
 }
@@ -160,6 +166,7 @@
                        _iceCandidatePoolSize,
                        _shouldPruneTurnPorts,
                        _shouldPresumeWritableWhenFullyRelayed,
+                       _shouldSurfaceIceCandidatesOnIceTransportTypeChanged,
                        _iceCheckMinInterval,
                        _iceRegatherIntervalRange,
                        _disableLinkLocalNetworks,
@@ -239,6 +246,8 @@
   nativeConfig->prune_turn_ports = _shouldPruneTurnPorts ? true : false;
   nativeConfig->presume_writable_when_fully_relayed =
       _shouldPresumeWritableWhenFullyRelayed ? true : false;
+  nativeConfig->surface_ice_candidates_on_ice_transport_type_changed =
+      _shouldSurfaceIceCandidatesOnIceTransportTypeChanged ? true : false;
   if (_iceCheckMinInterval != nil) {
     nativeConfig->ice_check_min_interval = absl::optional<int>(_iceCheckMinInterval.intValue);
   }
@@ -267,6 +276,7 @@
   }
   nativeConfig->set_audio_rtcp_report_interval_ms(_rtcpAudioReportIntervalMs);
   nativeConfig->set_video_rtcp_report_interval_ms(_rtcpVideoReportIntervalMs);
+  nativeConfig->allow_codec_switching = _allowCodecSwitching;
   return nativeConfig.release();
 }
 

@@ -63,7 +63,6 @@ class QualityAnalyzingVideoDecoder : public VideoDecoder {
                      int32_t number_of_cores) override;
   int32_t Decode(const EncodedImage& input_image,
                  bool missing_frames,
-                 const CodecSpecificInfo* codec_specific_info,
                  int64_t render_time_ms) override;
   int32_t RegisterDecodeCompleteCallback(
       DecodedImageCallback* callback) override;
@@ -85,20 +84,16 @@ class QualityAnalyzingVideoDecoder : public VideoDecoder {
     void Decoded(VideoFrame& decodedImage,
                  absl::optional<int32_t> decode_time_ms,
                  absl::optional<uint8_t> qp) override;
-    int32_t ReceivedDecodedReferenceFrame(uint64_t pictureId) override;
-    int32_t ReceivedDecodedFrame(uint64_t pictureId) override;
 
     int32_t IrrelevantSimulcastStreamDecoded(uint16_t frame_id,
-                                             int64_t timestamp_ms);
+                                             uint32_t timestamp_ms);
 
    private:
-    rtc::scoped_refptr<webrtc::VideoFrameBuffer> GetBlackFrameBuffer(
-        int width,
-        int height);
+    rtc::scoped_refptr<webrtc::VideoFrameBuffer> GetDummyFrameBuffer();
 
     QualityAnalyzingVideoDecoder* const decoder_;
 
-    rtc::scoped_refptr<webrtc::VideoFrameBuffer> black_frame_buffer_;
+    rtc::scoped_refptr<webrtc::VideoFrameBuffer> dummy_frame_buffer_;
 
     rtc::CriticalSection callback_lock_;
     DecodedImageCallback* delegate_callback_ RTC_GUARDED_BY(callback_lock_);

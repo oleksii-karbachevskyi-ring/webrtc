@@ -8,11 +8,13 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include "pc/data_channel.h"
+
 #include <string.h>
+
 #include <memory>
 #include <vector>
 
-#include "pc/data_channel.h"
 #include "pc/sctp_utils.h"
 #include "pc/test/fake_data_channel_provider.h"
 #include "rtc_base/gunit.h"
@@ -62,7 +64,7 @@ class FakeDataChannelObserver : public webrtc::DataChannelObserver {
 // TODO(deadbeef): The fact that these tests use a fake provider makes them not
 // too valuable. Should rewrite using the
 // peerconnection_datachannel_unittest.cc infrastructure.
-class SctpDataChannelTest : public testing::Test {
+class SctpDataChannelTest : public ::testing::Test {
  protected:
   SctpDataChannelTest()
       : provider_(new FakeDataChannelProvider()),
@@ -232,8 +234,10 @@ TEST_F(SctpDataChannelTest, VerifyMessagesAndBytesSent) {
   AddObserver();
   SetChannelReady();
   std::vector<webrtc::DataBuffer> buffers({
-      webrtc::DataBuffer("message 1"), webrtc::DataBuffer("msg 2"),
-      webrtc::DataBuffer("message three"), webrtc::DataBuffer("quadra message"),
+      webrtc::DataBuffer("message 1"),
+      webrtc::DataBuffer("msg 2"),
+      webrtc::DataBuffer("message three"),
+      webrtc::DataBuffer("quadra message"),
       webrtc::DataBuffer("fifthmsg"),
       webrtc::DataBuffer("message of the beast"),
   });
@@ -454,8 +458,10 @@ TEST_F(SctpDataChannelTest, NoMsgSentIfNegotiatedAndNotFromOpenMsg) {
 TEST_F(SctpDataChannelTest, VerifyMessagesAndBytesReceived) {
   AddObserver();
   std::vector<webrtc::DataBuffer> buffers({
-      webrtc::DataBuffer("message 1"), webrtc::DataBuffer("msg 2"),
-      webrtc::DataBuffer("message three"), webrtc::DataBuffer("quadra message"),
+      webrtc::DataBuffer("message 1"),
+      webrtc::DataBuffer("msg 2"),
+      webrtc::DataBuffer("message three"),
+      webrtc::DataBuffer("quadra message"),
       webrtc::DataBuffer("fifthmsg"),
       webrtc::DataBuffer("message of the beast"),
   });
@@ -604,16 +610,16 @@ TEST_F(SctpDataChannelTest, TransportDestroyedWhileDataBuffered) {
   provider_->set_send_blocked(true);
   EXPECT_TRUE(webrtc_data_channel_->Send(packet));
 
-  // Tell the data channel that its tranpsort is being destroyed.
+  // Tell the data channel that its transport is being destroyed.
   // It should then stop using the transport (allowing us to delete it) and
   // transition to the "closed" state.
-  webrtc_data_channel_->OnTransportChannelDestroyed();
+  webrtc_data_channel_->OnTransportChannelClosed();
   provider_.reset(nullptr);
   EXPECT_EQ_WAIT(webrtc::DataChannelInterface::kClosed,
                  webrtc_data_channel_->state(), kDefaultTimeout);
 }
 
-class SctpSidAllocatorTest : public testing::Test {
+class SctpSidAllocatorTest : public ::testing::Test {
  protected:
   SctpSidAllocator allocator_;
 };

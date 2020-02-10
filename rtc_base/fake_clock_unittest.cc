@@ -8,9 +8,9 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "test/gtest.h"
-
 #include "rtc_base/fake_clock.h"
+
+#include "test/gtest.h"
 
 namespace rtc {
 TEST(ScopedFakeClockTest, OverridesGlobalClock) {
@@ -21,13 +21,13 @@ TEST(ScopedFakeClockTest, OverridesGlobalClock) {
     ScopedFakeClock scoped;
     EXPECT_EQ(rtc::TimeMicros(), 0);
 
-    scoped.AdvanceTimeMicros(1000);
+    scoped.AdvanceTime(webrtc::TimeDelta::ms(1));
     EXPECT_EQ(rtc::TimeMicros(), 1000);
 
-    scoped.SetTimeMicros(kFixedTimeUs);
+    scoped.SetTime(webrtc::Timestamp::us(kFixedTimeUs));
     EXPECT_EQ(rtc::TimeMicros(), kFixedTimeUs);
 
-    scoped.AdvanceTimeMicros(1000);
+    scoped.AdvanceTime(webrtc::TimeDelta::ms(1));
     EXPECT_EQ(rtc::TimeMicros(), kFixedTimeUs + 1000);
   }
 

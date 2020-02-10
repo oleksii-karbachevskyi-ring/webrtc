@@ -51,6 +51,10 @@
 #include "rtc_base/null_socket_server.h"
 #include "rtc_base/time_utils.h"
 
+#if defined(WEBRTC_LINUX)
+#include <linux/sockios.h>
+#endif
+
 #if defined(WEBRTC_WIN)
 #define LAST_SYSTEM_ERROR (::GetLastError())
 #elif defined(__native_client__) && __native_client__
@@ -144,7 +148,7 @@ bool PhysicalSocket::Create(int family, int type) {
 }
 
 SocketAddress PhysicalSocket::GetLocalAddress() const {
-  sockaddr_storage addr_storage = {0};
+  sockaddr_storage addr_storage = {};
   socklen_t addrlen = sizeof(addr_storage);
   sockaddr* addr = reinterpret_cast<sockaddr*>(&addr_storage);
   int result = ::getsockname(s_, addr, &addrlen);
@@ -159,7 +163,7 @@ SocketAddress PhysicalSocket::GetLocalAddress() const {
 }
 
 SocketAddress PhysicalSocket::GetRemoteAddress() const {
-  sockaddr_storage addr_storage = {0};
+  sockaddr_storage addr_storage = {};
   socklen_t addrlen = sizeof(addr_storage);
   sockaddr* addr = reinterpret_cast<sockaddr*>(&addr_storage);
   int result = ::getpeername(s_, addr, &addrlen);
@@ -319,7 +323,7 @@ int PhysicalSocket::Send(const void* pv, size_t cb) {
 #else
       0
 #endif
-      );
+  );
   UpdateLastError();
   MaybeRemapSendError();
   // We have seen minidumps where this may be false.

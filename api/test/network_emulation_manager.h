@@ -15,6 +15,9 @@
 #include <vector>
 
 #include "api/test/simulated_network.h"
+#include "api/units/data_rate.h"
+#include "api/units/data_size.h"
+#include "api/units/timestamp.h"
 #include "rtc_base/network.h"
 #include "rtc_base/thread.h"
 
@@ -51,14 +54,51 @@ struct EmulatedEndpointConfig {
   bool start_as_enabled = true;
 };
 
+struct EmulatedNetworkStats {
+  int64_t packets_sent = 0;
+  DataSize bytes_sent = DataSize::Zero();
+  // Total amount of packets received with or without destination.
+  int64_t packets_received = 0;
+  // Total amount of bytes in received packets.
+  DataSize bytes_received = DataSize::Zero();
+  // Total amount of packets that were received, but no destination was found.
+  int64_t packets_dropped = 0;
+  // Total amount of bytes in dropped packets.
+  DataSize bytes_dropped = DataSize::Zero();
+
+  DataSize first_received_packet_size = DataSize::Zero();
+  DataSize first_sent_packet_size = DataSize::Zero();
+
+  Timestamp first_packet_sent_time = Timestamp::PlusInfinity();
+  Timestamp last_packet_sent_time = Timestamp::PlusInfinity();
+  Timestamp first_packet_received_time = Timestamp::PlusInfinity();
+  Timestamp last_packet_received_time = Timestamp::PlusInfinity();
+
+  DataRate AverageSendRate() const {
+    RTC_DCHECK_GE(packets_sent, 2);
+    return (bytes_sent - first_sent_packet_size) /
+           (last_packet_sent_time - first_packet_sent_time);
+  }
+  DataRate AverageReceiveRate() const {
+    RTC_DCHECK_GE(packets_received, 2);
+    return (bytes_received - first_received_packet_size) /
+           (last_packet_received_time - first_packet_received_time);
+  }
+};
+
 // Provide interface to obtain all required objects to inject network emulation
-// layer into PeerConnection.
+// layer into PeerConnection. Also contains information about network interfaces
+// accessible by PeerConnection.
 class EmulatedNetworkManagerInterface {
  public:
   virtual ~EmulatedNetworkManagerInterface() = default;
 
   virtual rtc::Thread* network_thread() = 0;
   virtual rtc::NetworkManager* network_manager() = 0;
+
+  // Returns summarized network stats for endpoints for this manager.
+  virtual void GetStats(
+      std::function<void(EmulatedNetworkStats)> stats_callback) const = 0;
 };
 
 // Provides an API for creating and configuring emulated network layer.
@@ -70,6 +110,8 @@ class NetworkEmulationManager {
 
   // Creates an emulated network node, which represents single network in
   // the emulated network layer.
+  virtual EmulatedNetworkNode* CreateEmulatedNode(
+      BuiltInNetworkBehaviorConfig config) = 0;
   virtual EmulatedNetworkNode* CreateEmulatedNode(
       std::unique_ptr<NetworkBehaviorInterface> network_behavior) = 0;
 
@@ -86,18 +128,23 @@ class NetworkEmulationManager {
   // Creates a route between endpoints going through specified network nodes.
   // This route is single direction only and describe how traffic that was
   // sent by network interface |from| have to be delivered to the network
-  // interface |to|. Return object can be used to remove created route.
+  // interface |to|. Return object can be used to remove created route. The
+  // route must contains at least one network node inside it.
   //
-  // Assume there are endpoints E1, E2 and E3 and network nodes A, B, C and D.
-  // Also assume, that there is a route constructed via A, B and C like this:
-  // E1 -> A -> B -> C -> E2. In such case:
-  //   * Caller mustn't use A, B and C in any route, that is leading to E2.
-  //   * If caller will then create a new route E1 -> D -> E3, then first
-  //     route will be corrupted, so if caller want to do this, first route
-  //     should be deleted by ClearRoute(...) and then a new one should be
-  //     created.
-  //   * Caller can use A, B or C for any other routes.
-  //   * Caller can create other routes leading to E2.
+  // Assume that E{0-9} are endpoints and N{0-9} are network nodes, then
+  // creation of the route have to follow these rules:
+  //   1. A route consists of a source endpoint, an ordered list of one or
+  //      more network nodes, and a destination endpoint.
+  //   2. If (E1, ..., E2) is a route, then E1 != E2.
+  //      In other words, the source and the destination may not be the same.
+  //   3. Given two simultaneously existing routes (E1, ..., E2) and
+  //      (E3, ..., E4), either E1 != E3 or E2 != E4.
+  //      In other words, there may be at most one route from any given source
+  //      endpoint to any given destination endpoint.
+  //   4. Given two simultaneously existing routes (E1, ..., N1, ..., E2)
+  //      and (E3, ..., N2, ..., E4), either N1 != N2 or E2 != E4.
+  //      In other words, a network node may not belong to two routes that lead
+  //      to the same destination endpoint.
   virtual EmulatedRoute* CreateRoute(
       EmulatedEndpoint* from,
       const std::vector<EmulatedNetworkNode*>& via_nodes,

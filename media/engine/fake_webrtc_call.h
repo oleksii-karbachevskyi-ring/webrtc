@@ -226,6 +226,15 @@ class FakeVideoReceiveStream final : public webrtc::VideoReceiveStream {
     return base_mininum_playout_delay_ms_;
   }
 
+  void SetFrameDecryptor(rtc::scoped_refptr<webrtc::FrameDecryptorInterface>
+                             frame_decryptor) override {}
+
+  RecordingState SetAndGetRecordingState(RecordingState state,
+                                         bool generate_key_frame) override {
+    return RecordingState();
+  }
+  void GenerateKeyFrame() override {}
+
  private:
   // webrtc::VideoReceiveStream implementation.
   void Start() override;
@@ -300,9 +309,6 @@ class FakeCall final : public webrtc::Call, public webrtc::PacketReceiver {
   int GetNumCreatedReceiveStreams() const;
   void SetStats(const webrtc::Call::Stats& stats);
 
-  void MediaTransportChange(
-      webrtc::MediaTransportInterface* media_transport_interface) override;
-
   void SetClientBitratePreferences(
       const webrtc::BitrateSettings& preferences) override {}
 
@@ -344,17 +350,13 @@ class FakeCall final : public webrtc::Call, public webrtc::PacketReceiver {
 
   webrtc::Call::Stats GetStats() const override;
 
-  void SetBitrateAllocationStrategy(
-      std::unique_ptr<rtc::BitrateAllocationStrategy>
-          bitrate_allocation_strategy) override;
-
   void SignalChannelNetworkState(webrtc::MediaType media,
                                  webrtc::NetworkState state) override;
   void OnAudioTransportOverheadChanged(
       int transport_overhead_per_packet) override;
   void OnSentPacket(const rtc::SentPacket& sent_packet) override;
 
-  testing::NiceMock<webrtc::MockRtpTransportControllerSend>
+  ::testing::NiceMock<webrtc::MockRtpTransportControllerSend>
       transport_controller_send_;
 
   webrtc::NetworkState audio_network_state_;

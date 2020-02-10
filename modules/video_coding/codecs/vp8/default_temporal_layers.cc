@@ -10,7 +10,6 @@
 #include "modules/video_coding/codecs/vp8/default_temporal_layers.h"
 
 #include <stdlib.h>
-#include <string.h>
 
 #include <algorithm>
 #include <array>
@@ -19,7 +18,6 @@
 #include <utility>
 #include <vector>
 
-#include "modules/include/module_common_types.h"
 #include "modules/video_coding/include/video_codec_interface.h"
 #include "rtc_base/arraysize.h"
 #include "rtc_base/checks.h"
@@ -37,7 +35,6 @@ DefaultTemporalLayers::PendingFrame::PendingFrame(
       dependency_info(dependency_info) {}
 
 namespace {
-using Buffer = Vp8FrameConfig::Buffer;
 using BufferFlags = Vp8FrameConfig::BufferFlags;
 using FreezeEntropy = Vp8FrameConfig::FreezeEntropy;
 using Vp8BufferReference = Vp8FrameConfig::Vp8BufferReference;
@@ -177,14 +174,14 @@ DefaultTemporalLayers::GetDependencyInfo(size_t num_layers) {
         // TL0 also references and updates the 'last' buffer.
         // TL1 also references 'last' and references and updates 'golden'.
         // TL2 references both 'last' and 'golden' but updates no buffer.
-        return {{"SSS", {kReferenceAndUpdate, kNone, kReference}},
-                {"--D", {kReference, kNone, kReference, kFreezeEntropy}},
-                {"-SS", {kReference, kUpdate, kReference}},
-                {"--D", {kReference, kReference, kReference, kFreezeEntropy}},
-                {"SRR", {kReferenceAndUpdate, kNone, kReference}},
-                {"--D", {kReference, kReference, kReference, kFreezeEntropy}},
-                {"-DS", {kReference, kReferenceAndUpdate, kReference}},
-                {"--D", {kReference, kReference, kReference, kFreezeEntropy}}};
+        return {{"SSS", {kReferenceAndUpdate, kNone, kNone}},
+                {"--D", {kReference, kNone, kNone, kFreezeEntropy}},
+                {"-SS", {kReference, kUpdate, kNone}},
+                {"--D", {kReference, kReference, kNone, kFreezeEntropy}},
+                {"SRR", {kReferenceAndUpdate, kNone, kNone}},
+                {"--D", {kReference, kReference, kNone, kFreezeEntropy}},
+                {"-DS", {kReference, kReferenceAndUpdate, kNone}},
+                {"--D", {kReference, kReference, kNone, kFreezeEntropy}}};
       }
     case 4:
       // TL0 references and updates only the 'last' buffer.
@@ -240,7 +237,7 @@ DefaultTemporalLayers::DefaultTemporalLayers(int number_of_temporal_layers)
   }
 
   kf_buffers_ = {kAllBuffers.begin(), kAllBuffers.end()};
-  for (DependencyInfo info : temporal_pattern_) {
+  for (const DependencyInfo& info : temporal_pattern_) {
     uint8_t updated_buffers = GetUpdatedBuffers(info.frame_config);
 
     for (Vp8BufferReference buffer : kAllBuffers) {
@@ -251,6 +248,13 @@ DefaultTemporalLayers::DefaultTemporalLayers(int number_of_temporal_layers)
 }
 
 DefaultTemporalLayers::~DefaultTemporalLayers() = default;
+
+void DefaultTemporalLayers::SetQpLimits(size_t stream_index,
+                                        int min_qp,
+                                        int max_qp) {
+  RTC_DCHECK_LT(stream_index, StreamCount());
+  // Ignore.
+}
 
 size_t DefaultTemporalLayers::StreamCount() const {
   return 1;
@@ -279,28 +283,34 @@ void DefaultTemporalLayers::OnRatesUpdated(
   }
 }
 
-bool DefaultTemporalLayers::UpdateConfiguration(size_t stream_index,
-                                                Vp8EncoderConfig* cfg) {
+Vp8EncoderConfig DefaultTemporalLayers::UpdateConfiguration(
+    size_t stream_index) {
   RTC_DCHECK_LT(stream_index, StreamCount());
 
+  Vp8EncoderConfig config;
+
   if (!new_bitrates_bps_) {
-    return false;
+    return config;
   }
+
+  config.temporal_layer_config.emplace();
+  Vp8EncoderConfig::TemporalLayerConfig& ts_config =
+      config.temporal_layer_config.value();
 
   for (size_t i = 0; i < num_layers_; ++i) {
-    cfg->ts_target_bitrate[i] = (*new_bitrates_bps_)[i] / 1000;
+    ts_config.ts_target_bitrate[i] = (*new_bitrates_bps_)[i] / 1000;
     // ..., 4, 2, 1
-    cfg->ts_rate_decimator[i] = 1 << (num_layers_ - i - 1);
+    ts_config.ts_rate_decimator[i] = 1 << (num_layers_ - i - 1);
   }
 
-  cfg->ts_number_layers = num_layers_;
-  cfg->ts_periodicity = temporal_ids_.size();
-  memcpy(cfg->ts_layer_id, &temporal_ids_[0],
-         sizeof(unsigned int) * temporal_ids_.size());
+  ts_config.ts_number_layers = num_layers_;
+  ts_config.ts_periodicity = temporal_ids_.size();
+  std::copy(temporal_ids_.begin(), temporal_ids_.end(),
+            ts_config.ts_layer_id.begin());
 
   new_bitrates_bps_.reset();
 
-  return true;
+  return config;
 }
 
 bool DefaultTemporalLayers::IsSyncFrame(const Vp8FrameConfig& config) const {
@@ -331,11 +341,14 @@ bool DefaultTemporalLayers::IsSyncFrame(const Vp8FrameConfig& config) const {
   return true;
 }
 
-Vp8FrameConfig DefaultTemporalLayers::UpdateLayerConfig(size_t stream_index,
-                                                        uint32_t timestamp) {
+Vp8FrameConfig DefaultTemporalLayers::NextFrameConfig(size_t stream_index,
+                                                      uint32_t timestamp) {
   RTC_DCHECK_LT(stream_index, StreamCount());
   RTC_DCHECK_GT(num_layers_, 0);
   RTC_DCHECK_GT(temporal_pattern_.size(), 0);
+
+  RTC_DCHECK_GT(kUninitializedPatternIndex, temporal_pattern_.size());
+  const bool first_frame = (pattern_idx_ == kUninitializedPatternIndex);
 
   pattern_idx_ = (pattern_idx_ + 1) % temporal_pattern_.size();
   DependencyInfo dependency_info = temporal_pattern_[pattern_idx_];
@@ -352,28 +365,33 @@ Vp8FrameConfig DefaultTemporalLayers::UpdateLayerConfig(size_t stream_index,
     }
   }
 
-  // Last is always ok to reference as it contains the base layer. For other
-  // buffers though, we need to check if the buffer has actually been refreshed
-  // this cycle of the temporal pattern. If the encoder dropped a frame, it
-  // might not have.
-  ValidateReferences(&tl_config.golden_buffer_flags,
-                     Vp8BufferReference::kGolden);
-  ValidateReferences(&tl_config.arf_buffer_flags, Vp8BufferReference::kAltref);
-  // Update search order to let the encoder know which buffers contains the most
-  // recent data.
-  UpdateSearchOrder(&tl_config);
-  // Figure out if this a sync frame (non-base-layer frame with only base-layer
-  // references).
-  tl_config.layer_sync = IsSyncFrame(tl_config);
+  if (first_frame) {
+    tl_config = Vp8FrameConfig::GetIntraFrameConfig();
+  } else {
+    // Last is always ok to reference as it contains the base layer. For other
+    // buffers though, we need to check if the buffer has actually been
+    // refreshed this cycle of the temporal pattern. If the encoder dropped
+    // a frame, it might not have.
+    ValidateReferences(&tl_config.golden_buffer_flags,
+                       Vp8BufferReference::kGolden);
+    ValidateReferences(&tl_config.arf_buffer_flags,
+                       Vp8BufferReference::kAltref);
+    // Update search order to let the encoder know which buffers contains the
+    // most recent data.
+    UpdateSearchOrder(&tl_config);
+    // Figure out if this a sync frame (non-base-layer frame with only
+    // base-layer references).
+    tl_config.layer_sync = IsSyncFrame(tl_config);
 
-  // Increment frame age, this needs to be in sync with |pattern_idx_|, so must
-  // update it here. Resetting age to 0 must be done when encoding is complete
-  // though, and so in the case of pipelining encoder it might lag. To prevent
-  // this data spill over into the next iteration, the |pedning_frames_| map
-  // is reset in loops. If delay is constant, the relative age should still be
-  // OK for the search order.
-  for (Vp8BufferReference buffer : kAllBuffers) {
-    ++frames_since_buffer_refresh_[buffer];
+    // Increment frame age, this needs to be in sync with |pattern_idx_|,
+    // so must update it here. Resetting age to 0 must be done when encoding is
+    // complete though, and so in the case of pipelining encoder it might lag.
+    // To prevent this data spill over into the next iteration,
+    // the |pedning_frames_| map is reset in loops. If delay is constant,
+    // the relative age should still be OK for the search order.
+    for (Vp8BufferReference buffer : kAllBuffers) {
+      ++frames_since_buffer_refresh_[buffer];
+    }
   }
 
   // Add frame to set of pending frames, awaiting completion.
@@ -384,7 +402,7 @@ Vp8FrameConfig DefaultTemporalLayers::UpdateLayerConfig(size_t stream_index,
   // Checker does not yet support encoder frame dropping, so validate flags
   // here before they can be dropped.
   // TODO(sprang): Update checker to support dropping.
-  RTC_DCHECK(checker_->CheckTemporalConfig(false, tl_config));
+  RTC_DCHECK(checker_->CheckTemporalConfig(first_frame, tl_config));
 #endif
 
   return tl_config;
@@ -455,13 +473,14 @@ void DefaultTemporalLayers::OnEncodeDone(size_t stream_index,
   RTC_DCHECK_LT(stream_index, StreamCount());
   RTC_DCHECK_GT(num_layers_, 0);
 
-  auto pending_frame = pending_frames_.find(rtp_timestamp);
-  RTC_DCHECK(pending_frame != pending_frames_.end());
-
   if (size_bytes == 0) {
-    pending_frames_.erase(pending_frame);
+    RTC_LOG(LS_WARNING) << "Empty frame; treating as dropped.";
+    OnFrameDropped(stream_index, rtp_timestamp);
     return;
   }
+
+  auto pending_frame = pending_frames_.find(rtp_timestamp);
+  RTC_DCHECK(pending_frame != pending_frames_.end());
 
   PendingFrame& frame = pending_frame->second;
   const Vp8FrameConfig& frame_config = frame.dependency_info.frame_config;
@@ -505,18 +524,30 @@ void DefaultTemporalLayers::OnEncodeDone(size_t stream_index,
   RTC_DCHECK_EQ(vp8_info.referencedBuffersCount, 0u);
   RTC_DCHECK_EQ(vp8_info.updatedBuffersCount, 0u);
 
-  for (int i = 0; i < static_cast<int>(Buffer::kCount); ++i) {
-    if (!is_keyframe && frame_config.References(static_cast<Buffer>(i))) {
+  GenericFrameInfo& generic_frame_info = info->generic_frame_info.emplace();
+
+  for (int i = 0; i < static_cast<int>(Vp8FrameConfig::Buffer::kCount); ++i) {
+    bool references = false;
+    bool updates = is_keyframe;
+
+    if (!is_keyframe &&
+        frame_config.References(static_cast<Vp8FrameConfig::Buffer>(i))) {
       RTC_DCHECK_LT(vp8_info.referencedBuffersCount,
                     arraysize(CodecSpecificInfoVP8::referencedBuffers));
+      references = true;
       vp8_info.referencedBuffers[vp8_info.referencedBuffersCount++] = i;
     }
 
-    if (is_keyframe || frame_config.Updates(static_cast<Buffer>(i))) {
+    if (is_keyframe ||
+        frame_config.Updates(static_cast<Vp8FrameConfig::Buffer>(i))) {
       RTC_DCHECK_LT(vp8_info.updatedBuffersCount,
                     arraysize(CodecSpecificInfoVP8::updatedBuffers));
+      updates = true;
       vp8_info.updatedBuffers[vp8_info.updatedBuffersCount++] = i;
     }
+
+    if (references || updates)
+      generic_frame_info.encoder_buffers.emplace_back(i, references, updates);
   }
 
   // The templates are always present on keyframes, and then refered to by
@@ -524,10 +555,9 @@ void DefaultTemporalLayers::OnEncodeDone(size_t stream_index,
   if (is_keyframe) {
     info->template_structure = GetTemplateStructure(num_layers_);
   }
-
-  GenericFrameInfo& generic_frame_info = info->generic_frame_info.emplace();
   generic_frame_info.decode_target_indications =
       frame.dependency_info.decode_target_indications;
+  generic_frame_info.temporal_id = frame_config.packetizer_temporal_idx;
 
   if (!frame.expired) {
     for (Vp8BufferReference buffer : kAllBuffers) {
@@ -536,18 +566,30 @@ void DefaultTemporalLayers::OnEncodeDone(size_t stream_index,
       }
     }
   }
+
+  pending_frames_.erase(pending_frame);
+}
+
+void DefaultTemporalLayers::OnFrameDropped(size_t stream_index,
+                                           uint32_t rtp_timestamp) {
+  auto pending_frame = pending_frames_.find(rtp_timestamp);
+  RTC_DCHECK(pending_frame != pending_frames_.end());
+  pending_frames_.erase(pending_frame);
 }
 
 void DefaultTemporalLayers::OnPacketLossRateUpdate(float packet_loss_rate) {}
 
 void DefaultTemporalLayers::OnRttUpdate(int64_t rtt_ms) {}
 
-TemplateStructure DefaultTemporalLayers::GetTemplateStructure(
+void DefaultTemporalLayers::OnLossNotification(
+    const VideoEncoder::LossNotification& loss_notification) {}
+
+FrameDependencyStructure DefaultTemporalLayers::GetTemplateStructure(
     int num_layers) const {
   RTC_CHECK_LT(num_layers, 5);
   RTC_CHECK_GT(num_layers, 0);
 
-  TemplateStructure template_structure;
+  FrameDependencyStructure template_structure;
   template_structure.num_decode_targets = num_layers;
 
   using Builder = GenericFrameInfo::Builder;

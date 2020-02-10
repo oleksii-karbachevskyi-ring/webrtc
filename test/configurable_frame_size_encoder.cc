@@ -11,6 +11,7 @@
 #include "test/configurable_frame_size_encoder.h"
 
 #include <string.h>
+
 #include <cstdint>
 #include <type_traits>
 #include <utility>
@@ -36,10 +37,14 @@ ConfigurableFrameSizeEncoder::ConfigurableFrameSizeEncoder(
 
 ConfigurableFrameSizeEncoder::~ConfigurableFrameSizeEncoder() {}
 
+void ConfigurableFrameSizeEncoder::SetFecControllerOverride(
+    FecControllerOverride* fec_controller_override) {
+  // Ignored.
+}
+
 int32_t ConfigurableFrameSizeEncoder::InitEncode(
     const VideoCodec* codec_settings,
-    int32_t number_of_cores,
-    size_t max_payload_size) {
+    const Settings& settings) {
   return WEBRTC_VIDEO_CODEC_OK;
 }
 
@@ -74,11 +79,8 @@ int32_t ConfigurableFrameSizeEncoder::Release() {
   return WEBRTC_VIDEO_CODEC_OK;
 }
 
-int32_t ConfigurableFrameSizeEncoder::SetRateAllocation(
-    const VideoBitrateAllocation& allocation,
-    uint32_t framerate) {
-  return WEBRTC_VIDEO_CODEC_OK;
-}
+void ConfigurableFrameSizeEncoder::SetRates(
+    const RateControlParameters& parameters) {}
 
 int32_t ConfigurableFrameSizeEncoder::SetFrameSize(size_t size) {
   RTC_DCHECK_LE(size, max_frame_size_);

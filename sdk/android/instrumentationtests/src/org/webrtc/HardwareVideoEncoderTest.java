@@ -34,7 +34,6 @@ import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.junit.After;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -70,7 +69,8 @@ public class HardwareVideoEncoderTest {
   private static final boolean ENABLE_H264_HIGH_PROFILE = true;
   private static final VideoEncoder.Settings SETTINGS =
       new VideoEncoder.Settings(1 /* core */, 640 /* width */, 480 /* height */, 300 /* kbps */,
-          30 /* fps */, 1 /* numberOfSimulcastStreams */, true /* automaticResizeOn */);
+          30 /* fps */, 1 /* numberOfSimulcastStreams */, true /* automaticResizeOn */,
+          /* capabilities= */ new VideoEncoder.Capabilities(false /* lossNotification */));
   private static final int ENCODE_TIMEOUT_MS = 1000;
   private static final int NUM_TEST_FRAMES = 10;
   private static final int NUM_ENCODE_TRIES = 100;

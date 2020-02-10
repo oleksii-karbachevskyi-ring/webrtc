@@ -8,15 +8,15 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include "rtc_base/task_utils/repeating_task.h"
+
 #include <atomic>
 #include <chrono>  // Not allowed in production per Chromium style guide.
 #include <memory>
 #include <thread>  // Not allowed in production per Chromium style guide.
 
-#include "absl/memory/memory.h"
 #include "rtc_base/event.h"
 #include "rtc_base/task_queue_for_test.h"
-#include "rtc_base/task_utils/repeating_task.h"
 #include "test/gmock.h"
 #include "test/gtest.h"
 
@@ -60,23 +60,11 @@ class MoveOnlyClosure {
  private:
   MockClosure* mock_;
 };
-
-// Helper closure class to stop repeating task on a task queue. This is
-// equivalent to [handle{move(handle)}] { handle.Stop(); } in c++14.
-class TaskHandleStopper {
- public:
-  explicit TaskHandleStopper(RepeatingTaskHandle handle)
-      : handle_(std::move(handle)) {}
-  void operator()() { handle_.Stop(); }
-
- private:
-  RepeatingTaskHandle handle_;
-};
 }  // namespace
 
 TEST(RepeatingTaskTest, TaskIsStoppedOnStop) {
-  const TimeDelta kShortInterval = TimeDelta::ms(5);
-  const TimeDelta kLongInterval = TimeDelta::ms(20);
+  const TimeDelta kShortInterval = TimeDelta::ms(50);
+  const TimeDelta kLongInterval = TimeDelta::ms(200);
   const int kShortIntervalCount = 4;
   const int kMargin = 1;
 
@@ -91,7 +79,8 @@ TEST(RepeatingTaskTest, TaskIsStoppedOnStop) {
   Sleep(kShortInterval * (kShortIntervalCount + kMargin));
   EXPECT_EQ(counter.load(), kShortIntervalCount);
 
-  task_queue.PostTask(TaskHandleStopper(std::move(handle)));
+  task_queue.PostTask(
+      [handle = std::move(handle)]() mutable { handle.Stop(); });
   // Sleep long enough that the task would run at least once more if not
   // stopped.
   Sleep(kLongInterval * 2);
@@ -125,14 +114,14 @@ TEST(RepeatingTaskTest, CompensatesForShortRunTime) {
   TaskQueueForTest task_queue("TestQueue");
   RepeatingTaskHandle::Start(task_queue.Get(), [&] {
     ++counter;
-    // Sleeping for the 10 ms should be compensated.
-    Sleep(TimeDelta::ms(10));
-    return TimeDelta::ms(30);
+    // Sleeping for the 100 ms should be compensated.
+    Sleep(TimeDelta::ms(100));
+    return TimeDelta::ms(300);
   });
-  Sleep(TimeDelta::ms(40));
+  Sleep(TimeDelta::ms(400));
 
   // We expect that the task have been called twice, once directly at Start and
-  // once after 30 ms has passed.
+  // once after 300 ms has passed.
   EXPECT_EQ(counter.load(), 2);
 }
 
@@ -144,7 +133,8 @@ TEST(RepeatingTaskTest, CancelDelayedTaskBeforeItRuns) {
   TaskQueueForTest task_queue("queue");
   auto handle = RepeatingTaskHandle::DelayedStart(
       task_queue.Get(), TimeDelta::ms(100), MoveOnlyClosure(&mock));
-  task_queue.PostTask(TaskHandleStopper(std::move(handle)));
+  task_queue.PostTask(
+      [handle = std::move(handle)]() mutable { handle.Stop(); });
   EXPECT_TRUE(done.Wait(kTimeout.ms()));
 }
 
@@ -156,7 +146,8 @@ TEST(RepeatingTaskTest, CancelTaskAfterItRuns) {
   TaskQueueForTest task_queue("queue");
   auto handle =
       RepeatingTaskHandle::Start(task_queue.Get(), MoveOnlyClosure(&mock));
-  task_queue.PostTask(TaskHandleStopper(std::move(handle)));
+  task_queue.PostTask(
+      [handle = std::move(handle)]() mutable { handle.Stop(); });
   EXPECT_TRUE(done.Wait(kTimeout.ms()));
 }
 
@@ -218,14 +209,16 @@ TEST(RepeatingTaskTest, Example) {
     }
   };
   TaskQueueForTest task_queue("queue");
-  auto object = absl::make_unique<ObjectOnTaskQueue>();
+  auto object = std::make_unique<ObjectOnTaskQueue>();
   // Create and start the periodic task.
   RepeatingTaskHandle handle;
   object->StartPeriodicTask(&handle, task_queue.Get());
   // Restart the task
-  task_queue.PostTask(TaskHandleStopper(std::move(handle)));
+  task_queue.PostTask(
+      [handle = std::move(handle)]() mutable { handle.Stop(); });
   object->StartPeriodicTask(&handle, task_queue.Get());
-  task_queue.PostTask(TaskHandleStopper(std::move(handle)));
+  task_queue.PostTask(
+      [handle = std::move(handle)]() mutable { handle.Stop(); });
   struct Destructor {
     void operator()() { object.reset(); }
     std::unique_ptr<ObjectOnTaskQueue> object;

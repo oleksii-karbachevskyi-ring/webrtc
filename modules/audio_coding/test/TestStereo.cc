@@ -44,8 +44,7 @@ int32_t TestPackStereo::SendData(const AudioFrameType frame_type,
                                  const uint8_t payload_type,
                                  const uint32_t timestamp,
                                  const uint8_t* payload_data,
-                                 const size_t payload_size,
-                                 const RTPFragmentationHeader* fragmentation) {
+                                 const size_t payload_size) {
   RTPHeader rtp_header;
   int32_t status = 0;
 
@@ -105,8 +104,7 @@ TestStereo::TestStereo()
       test_cntr_(0),
       pack_size_samp_(0),
       pack_size_bytes_(0),
-      counter_(0) {
-}
+      counter_(0) {}
 
 TestStereo::~TestStereo() {
   if (channel_a2b_ != NULL) {

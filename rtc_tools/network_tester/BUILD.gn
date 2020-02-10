@@ -26,7 +26,7 @@ if (rtc_enable_protobuf) {
     proto_out_dir = "rtc_tools/network_tester"
   }
 
-  rtc_static_library("network_tester") {
+  rtc_library("network_tester") {
     sources = [
       "config_reader.cc",
       "config_reader.h",
@@ -48,12 +48,12 @@ if (rtc_enable_protobuf) {
       "../../p2p",
       "../../rtc_base",
       "../../rtc_base:checks",
+      "../../rtc_base:ignore_wundef",
       "../../rtc_base:protobuf_utils",
       "../../rtc_base:rtc_base_approved",
       "../../rtc_base:rtc_task_queue",
-      "../../rtc_base:sequenced_task_checker",
+      "../../rtc_base/synchronization:sequence_checker",
       "../../rtc_base/third_party/sigslot",
-      "//third_party/abseil-cpp/absl/memory",
       "//third_party/abseil-cpp/absl/types:optional",
     ]
   }
@@ -73,7 +73,7 @@ if (rtc_enable_protobuf) {
     }
   }
 
-  rtc_source_set("network_tester_unittests") {
+  rtc_library("network_tester_unittests") {
     testonly = true
 
     sources = [
@@ -109,10 +109,12 @@ if (rtc_enable_protobuf) {
 }
 
 if (is_android) {
-  android_apk("NetworkTesterMobile") {
+  rtc_android_apk("NetworkTesterMobile") {
     testonly = true
     apk_name = "NetworkTesterMobile"
     android_manifest = "androidapp/AndroidManifest.xml"
+    min_sdk_version = 17
+    target_sdk_version = 24
 
     deps = [
       ":NetworkTesterMobile_javalib",
@@ -123,7 +125,7 @@ if (is_android) {
     shared_libraries = [ "../../rtc_tools/network_tester:network_tester_so" ]
   }
 
-  android_library("NetworkTesterMobile_javalib") {
+  rtc_android_library("NetworkTesterMobile_javalib") {
     testonly = true
     android_manifest_for_lint = "androidapp/AndroidManifest.xml"
 

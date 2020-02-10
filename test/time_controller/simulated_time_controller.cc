@@ -13,11 +13,11 @@
 #include <deque>
 #include <list>
 #include <map>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
-#include "absl/memory/memory.h"
 #include "absl/strings/string_view.h"
 
 namespace webrtc {
@@ -307,22 +307,9 @@ std::unique_ptr<ProcessThread> SimulatedTimeControllerImpl::CreateProcessThread(
     const char* thread_name) {
   rtc::CritScope lock(&lock_);
   auto process_thread =
-      absl::make_unique<SimulatedSequenceRunner>(this, thread_name);
+      std::make_unique<SimulatedSequenceRunner>(this, thread_name);
   runners_.push_back(process_thread.get());
   return process_thread;
-}
-
-std::vector<SimulatedSequenceRunner*>
-SimulatedTimeControllerImpl::GetNextReadyRunner(Timestamp current_time) {
-  rtc::CritScope lock(&lock_);
-  std::vector<SimulatedSequenceRunner*> ready;
-  for (auto* runner : runners_) {
-    if (yielded_.find(runner) == yielded_.end() &&
-        runner->GetNextRunTime() <= current_time) {
-      ready.push_back(runner);
-    }
-  }
-  return ready;
 }
 
 void SimulatedTimeControllerImpl::YieldExecution() {
@@ -347,16 +334,31 @@ void SimulatedTimeControllerImpl::YieldExecution() {
 
 void SimulatedTimeControllerImpl::RunReadyRunners() {
   RTC_DCHECK_RUN_ON(&thread_checker_);
+  rtc::CritScope lock(&lock_);
   RTC_DCHECK_EQ(rtc::CurrentThreadId(), thread_id_);
   Timestamp current_time = CurrentTime();
+  // Clearing |ready_runners_| in case this is a recursive call:
+  // RunReadyRunners -> Run -> Event::Wait -> Yield ->RunReadyRunners
+  ready_runners_.clear();
+
   // We repeat until we have no ready left to handle tasks posted by ready
   // runners.
   while (true) {
-    auto ready = GetNextReadyRunner(current_time);
-    if (ready.empty())
-      break;
-    for (auto* runner : ready) {
+    for (auto* runner : runners_) {
+      if (yielded_.find(runner) == yielded_.end() &&
+          runner->GetNextRunTime() <= current_time) {
+        ready_runners_.push_back(runner);
+      }
+    }
+    if (ready_runners_.empty())
+      return;
+    while (!ready_runners_.empty()) {
+      auto* runner = ready_runners_.front();
+      ready_runners_.pop_front();
       runner->UpdateReady(current_time);
+      // Note that the Run function might indirectly cause a call to
+      // Unregister() which will recursively grab |lock_| again to remove items
+      // from |ready_runners_|.
       runner->Run(current_time);
     }
   }
@@ -382,7 +384,7 @@ Timestamp SimulatedTimeControllerImpl::NextRunTime() const {
 
 void SimulatedTimeControllerImpl::AdvanceTime(Timestamp target_time) {
   rtc::CritScope time_lock(&time_lock_);
-  RTC_DCHECK(target_time >= current_time_);
+  RTC_DCHECK_GE(target_time, current_time_);
   current_time_ = target_time;
 }
 
@@ -390,14 +392,15 @@ void SimulatedTimeControllerImpl::Unregister(SimulatedSequenceRunner* runner) {
   rtc::CritScope lock(&lock_);
   bool removed = RemoveByValue(runners_, runner);
   RTC_CHECK(removed);
+  RemoveByValue(ready_runners_, runner);
 }
 
 }  // namespace sim_time_impl
 
 GlobalSimulatedTimeController::GlobalSimulatedTimeController(
     Timestamp start_time)
-    : sim_clock_(start_time.us()), impl_(start_time) {
-  global_clock_.SetTimeMicros(start_time.us());
+    : sim_clock_(start_time.us()), impl_(start_time), yield_policy_(&impl_) {
+  global_clock_.SetTime(start_time);
 }
 
 GlobalSimulatedTimeController::~GlobalSimulatedTimeController() = default;
@@ -415,7 +418,7 @@ GlobalSimulatedTimeController::CreateProcessThread(const char* thread_name) {
   return impl_.CreateProcessThread(thread_name);
 }
 
-void GlobalSimulatedTimeController::Sleep(TimeDelta duration) {
+void GlobalSimulatedTimeController::AdvanceTime(TimeDelta duration) {
   rtc::ScopedYieldPolicy yield_policy(&impl_);
   Timestamp current_time = impl_.CurrentTime();
   Timestamp target_time = current_time + duration;
@@ -427,16 +430,8 @@ void GlobalSimulatedTimeController::Sleep(TimeDelta duration) {
     auto delta = next_time - current_time;
     current_time = next_time;
     sim_clock_.AdvanceTimeMicroseconds(delta.us());
-    global_clock_.AdvanceTimeMicros(delta.us());
+    global_clock_.AdvanceTime(delta);
   }
 }
-
-void GlobalSimulatedTimeController::InvokeWithControlledYield(
-    std::function<void()> closure) {
-  rtc::ScopedYieldPolicy yield_policy(&impl_);
-  closure();
-}
-
-// namespace sim_time_impl
 
 }  // namespace webrtc

@@ -173,7 +173,10 @@ public class PeerConnectionFactory {
     @Nullable private VideoDecoderFactory videoDecoderFactory;
     @Nullable private AudioProcessingFactory audioProcessingFactory;
     @Nullable private FecControllerFactoryFactoryInterface fecControllerFactoryFactory;
+    @Nullable private NetworkControllerFactoryFactory networkControllerFactoryFactory;
+    @Nullable private NetworkStatePredictorFactoryFactory networkStatePredictorFactoryFactory;
     @Nullable private MediaTransportFactoryFactory mediaTransportFactoryFactory;
+    @Nullable private NetEqFactoryFactory neteqFactoryFactory;
 
     private Builder() {}
 
@@ -232,10 +235,33 @@ public class PeerConnectionFactory {
       return this;
     }
 
+    public Builder setNetworkControllerFactoryFactory(
+        NetworkControllerFactoryFactory networkControllerFactoryFactory) {
+      this.networkControllerFactoryFactory = networkControllerFactoryFactory;
+      return this;
+    }
+
+    public Builder setNetworkStatePredictorFactoryFactory(
+        NetworkStatePredictorFactoryFactory networkStatePredictorFactoryFactory) {
+      this.networkStatePredictorFactoryFactory = networkStatePredictorFactoryFactory;
+      return this;
+    }
+
     /** Sets a MediaTransportFactoryFactory for a PeerConnectionFactory. */
     public Builder setMediaTransportFactoryFactory(
         MediaTransportFactoryFactory mediaTransportFactoryFactory) {
       this.mediaTransportFactoryFactory = mediaTransportFactoryFactory;
+      return this;
+    }
+
+    /**
+     * Sets a NetEqFactoryFactory for the PeerConnectionFactory. When using a
+     * custom NetEqFactoryFactory, the AudioDecoderFactoryFactory will be set
+     * to null. The AudioDecoderFactoryFactory should be wrapped in the
+     * NetEqFactoryFactory.
+     */
+    public Builder setNetEqFactoryFactory(NetEqFactoryFactory neteqFactoryFactory) {
+      this.neteqFactoryFactory = neteqFactoryFactory;
       return this;
     }
 
@@ -252,9 +278,16 @@ public class PeerConnectionFactory {
           videoDecoderFactory,
           audioProcessingFactory == null ? 0 : audioProcessingFactory.createNative(),
           fecControllerFactoryFactory == null ? 0 : fecControllerFactoryFactory.createNative(),
+          networkControllerFactoryFactory == null
+              ? 0
+              : networkControllerFactoryFactory.createNativeNetworkControllerFactory(),
+          networkStatePredictorFactoryFactory == null
+              ? 0
+              : networkStatePredictorFactoryFactory.createNativeNetworkStatePredictorFactory(),
           mediaTransportFactoryFactory == null
               ? 0
-              : mediaTransportFactoryFactory.createNativeMediaTransportFactory());
+              : mediaTransportFactoryFactory.createNativeMediaTransportFactory(),
+          neteqFactoryFactory == null ? 0 : neteqFactoryFactory.createNativeNetEqFactory());
     }
   }
 
@@ -575,7 +608,8 @@ public class PeerConnectionFactory {
       Options options, long nativeAudioDeviceModule, long audioEncoderFactory,
       long audioDecoderFactory, VideoEncoderFactory encoderFactory,
       VideoDecoderFactory decoderFactory, long nativeAudioProcessor,
-      long nativeFecControllerFactory, long mediaTransportFactory);
+      long nativeFecControllerFactory, long nativeNetworkControllerFactory,
+      long nativeNetworkStatePredictorFactory, long mediaTransportFactory, long neteqFactory);
 
   private static native long nativeCreatePeerConnection(long factory,
       PeerConnection.RTCConfiguration rtcConfig, MediaConstraints constraints, long nativeObserver,

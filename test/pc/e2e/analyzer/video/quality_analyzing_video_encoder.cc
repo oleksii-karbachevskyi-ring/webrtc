@@ -11,10 +11,11 @@
 #include "test/pc/e2e/analyzer/video/quality_analyzing_video_encoder.h"
 
 #include <cmath>
+#include <memory>
 #include <utility>
 
-#include "absl/memory/memory.h"
 #include "api/video/video_codec_type.h"
+#include "api/video_codecs/video_encoder.h"
 #include "modules/video_coding/include/video_error_codes.h"
 #include "rtc_base/critical_section.h"
 #include "rtc_base/logging.h"
@@ -63,13 +64,19 @@ QualityAnalyzingVideoEncoder::QualityAnalyzingVideoEncoder(
       bitrate_multiplier_(bitrate_multiplier),
       stream_required_spatial_index_(std::move(stream_required_spatial_index)),
       injector_(injector),
-      analyzer_(analyzer) {}
+      analyzer_(analyzer),
+      mode_(SimulcastMode::kNormal),
+      delegate_callback_(nullptr) {}
 QualityAnalyzingVideoEncoder::~QualityAnalyzingVideoEncoder() = default;
+
+void QualityAnalyzingVideoEncoder::SetFecControllerOverride(
+    FecControllerOverride* fec_controller_override) {
+  // Ignored.
+}
 
 int32_t QualityAnalyzingVideoEncoder::InitEncode(
     const VideoCodec* codec_settings,
-    int32_t number_of_cores,
-    size_t max_payload_size) {
+    const Settings& settings) {
   rtc::CritScope crit(&lock_);
   codec_settings_ = *codec_settings;
   mode_ = SimulcastMode::kNormal;
@@ -94,8 +101,7 @@ int32_t QualityAnalyzingVideoEncoder::InitEncode(
   if (codec_settings->numberOfSimulcastStreams > 1) {
     mode_ = SimulcastMode::kSimulcast;
   }
-  return delegate_->InitEncode(codec_settings, number_of_cores,
-                               max_payload_size);
+  return delegate_->InitEncode(codec_settings, settings);
 }
 
 int32_t QualityAnalyzingVideoEncoder::RegisterEncodeCompleteCallback(
@@ -147,17 +153,11 @@ int32_t QualityAnalyzingVideoEncoder::Encode(
   return result;
 }
 
-int32_t QualityAnalyzingVideoEncoder::SetRates(uint32_t bitrate,
-                                               uint32_t framerate) {
-  return delegate_->SetRates(bitrate, framerate);
-}
-
-int32_t QualityAnalyzingVideoEncoder::SetRateAllocation(
-    const VideoBitrateAllocation& allocation,
-    uint32_t framerate) {
+void QualityAnalyzingVideoEncoder::SetRates(
+    const VideoEncoder::RateControlParameters& parameters) {
   RTC_DCHECK_GT(bitrate_multiplier_, 0.0);
   if (fabs(bitrate_multiplier_ - kNoMultiplier) < kEps) {
-    return delegate_->SetRateAllocation(allocation, framerate);
+    return delegate_->SetRates(parameters);
   }
 
   // Simulating encoder overshooting target bitrate, by configuring actual
@@ -166,7 +166,7 @@ int32_t QualityAnalyzingVideoEncoder::SetRateAllocation(
   VideoBitrateAllocation multiplied_allocation;
   for (size_t si = 0; si < kMaxSpatialLayers; ++si) {
     const uint32_t spatial_layer_bitrate_bps =
-        allocation.GetSpatialLayerSum(si);
+        parameters.bitrate.GetSpatialLayerSum(si);
     if (spatial_layer_bitrate_bps == 0) {
       continue;
     }
@@ -185,16 +185,18 @@ int32_t QualityAnalyzingVideoEncoder::SetRateAllocation(
     }
 
     for (size_t ti = 0; ti < kMaxTemporalStreams; ++ti) {
-      if (allocation.HasBitrate(si, ti)) {
+      if (parameters.bitrate.HasBitrate(si, ti)) {
         multiplied_allocation.SetBitrate(
             si, ti,
             rtc::checked_cast<uint32_t>(bitrate_multiplier *
-                                        allocation.GetBitrate(si, ti)));
+                                        parameters.bitrate.GetBitrate(si, ti)));
       }
     }
   }
 
-  return delegate_->SetRateAllocation(multiplied_allocation, framerate);
+  RateControlParameters adjusted_params = parameters;
+  adjusted_params.bitrate = multiplied_allocation;
+  return delegate_->SetRates(adjusted_params);
 }
 
 VideoEncoder::EncoderInfo QualityAnalyzingVideoEncoder::GetEncoderInfo() const {
@@ -288,12 +290,10 @@ bool QualityAnalyzingVideoEncoder::ShouldDiscard(
   absl::optional<int> required_spatial_index =
       stream_required_spatial_index_[stream_label];
   if (required_spatial_index) {
-    RTC_CHECK(encoded_image.SpatialIndex())
-        << "Specific spatial layer/simulcast stream requested for track, but "
-           "now spatial layers/simulcast streams produced by encoder. "
-           "stream_label="
-        << stream_label
-        << "; required_spatial_index=" << *required_spatial_index;
+    absl::optional<int> cur_spatial_index = encoded_image.SpatialIndex();
+    if (!cur_spatial_index) {
+      cur_spatial_index = 0;
+    }
     RTC_CHECK(mode_ != SimulcastMode::kNormal)
         << "Analyzing encoder is in kNormal "
            "mode, but spatial layer/simulcast "
@@ -301,21 +301,21 @@ bool QualityAnalyzingVideoEncoder::ShouldDiscard(
     if (mode_ == SimulcastMode::kSimulcast) {
       // In simulcast mode only encoded images with required spatial index are
       // interested, so all others have to be discarded.
-      return *encoded_image.SpatialIndex() != *required_spatial_index;
+      return *cur_spatial_index != *required_spatial_index;
     } else if (mode_ == SimulcastMode::kSVC) {
       // In SVC mode encoded images with spatial indexes that are equal or
       // less than required one are interesting, so all above have to be
       // discarded.
-      return *encoded_image.SpatialIndex() > *required_spatial_index;
+      return *cur_spatial_index > *required_spatial_index;
     } else if (mode_ == SimulcastMode::kKSVC) {
       // In KSVC mode for key frame encoded images with spatial indexes that
       // are equal or less than required one are interesting, so all above
       // have to be discarded. For other frames only required spatial index
       // is interesting, so all others have to be discarded.
       if (encoded_image._frameType == VideoFrameType::kVideoFrameKey) {
-        return *encoded_image.SpatialIndex() > *required_spatial_index;
+        return *cur_spatial_index > *required_spatial_index;
       } else {
-        return *encoded_image.SpatialIndex() != *required_spatial_index;
+        return *cur_spatial_index != *required_spatial_index;
       }
     } else {
       RTC_NOTREACHED() << "Unsupported encoder mode";
@@ -354,7 +354,7 @@ QualityAnalyzingVideoEncoderFactory::QueryVideoEncoder(
 std::unique_ptr<VideoEncoder>
 QualityAnalyzingVideoEncoderFactory::CreateVideoEncoder(
     const SdpVideoFormat& format) {
-  return absl::make_unique<QualityAnalyzingVideoEncoder>(
+  return std::make_unique<QualityAnalyzingVideoEncoder>(
       id_generator_->GetNextId(), delegate_->CreateVideoEncoder(format),
       bitrate_multiplier_, stream_required_spatial_index_, injector_,
       analyzer_);

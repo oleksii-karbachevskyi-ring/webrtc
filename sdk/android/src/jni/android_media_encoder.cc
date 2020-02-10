@@ -32,11 +32,11 @@
 #include "rtc_base/bind.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/sequenced_task_checker.h"
+#include "rtc_base/synchronization/sequence_checker.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/time_utils.h"
 #include "rtc_base/weak_ptr.h"
-#include "sdk/android/generated_video_jni/jni/MediaCodecVideoEncoder_jni.h"
+#include "sdk/android/generated_video_jni/MediaCodecVideoEncoder_jni.h"
 #include "sdk/android/native_api/jni/java_types.h"
 #include "sdk/android/src/jni/android_media_codec_common.h"
 #include "sdk/android/src/jni/jni_helpers.h"
@@ -97,15 +97,13 @@ class MediaCodecVideoEncoder : public VideoEncoder {
 
   // VideoEncoder implementation.
   int32_t InitEncode(const VideoCodec* codec_settings,
-                     int32_t /* number_of_cores */,
-                     size_t /* max_payload_size */) override;
+                     const Settings& settings) override;
   int32_t Encode(const VideoFrame& input_image,
                  const std::vector<VideoFrameType>* frame_types) override;
   int32_t RegisterEncodeCompleteCallback(
       EncodedImageCallback* callback) override;
   int32_t Release() override;
-  int32_t SetRateAllocation(const VideoBitrateAllocation& rate_allocation,
-                            uint32_t frame_rate) override;
+  void SetRates(const RateControlParameters& parameters) override;
   EncoderInfo GetEncoderInfo() const override;
 
   // Fills the input buffer with data from the buffers passed as parameters.
@@ -197,7 +195,7 @@ class MediaCodecVideoEncoder : public VideoEncoder {
 
   // State that is constant for the lifetime of this object once the ctor
   // returns.
-  rtc::SequencedTaskChecker encoder_queue_checker_;
+  SequenceChecker encoder_queue_checker_;
   ScopedJavaGlobalRef<jobject> j_media_codec_video_encoder_;
 
   // State that is valid only between InitEncode() and the next Release().
@@ -305,9 +303,8 @@ MediaCodecVideoEncoder::MediaCodecVideoEncoder(JNIEnv* jni,
 }
 
 int32_t MediaCodecVideoEncoder::InitEncode(const VideoCodec* codec_settings,
-                                           int32_t /* number_of_cores */,
-                                           size_t /* max_payload_size */) {
-  RTC_DCHECK_CALLED_SEQUENTIALLY(&encoder_queue_checker_);
+                                           const Settings& settings) {
+  RTC_DCHECK_RUN_ON(&encoder_queue_checker_);
   if (codec_settings == NULL) {
     ALOGE << "NULL VideoCodec instance";
     return WEBRTC_VIDEO_CODEC_ERR_PARAMETER;
@@ -367,7 +364,7 @@ int32_t MediaCodecVideoEncoder::InitEncode(const VideoCodec* codec_settings,
 }
 
 bool MediaCodecVideoEncoder::ResetCodec() {
-  RTC_DCHECK_CALLED_SEQUENTIALLY(&encoder_queue_checker_);
+  RTC_DCHECK_RUN_ON(&encoder_queue_checker_);
   ALOGE << "Reset";
   if (Release() != WEBRTC_VIDEO_CODEC_OK) {
     ALOGE << "Releasing codec failed during reset.";
@@ -391,7 +388,7 @@ bool MediaCodecVideoEncoder::EncodeTask::Run() {
     return true;
   }
 
-  RTC_DCHECK_CALLED_SEQUENTIALLY(&encoder_->encoder_queue_checker_);
+  RTC_DCHECK_RUN_ON(&encoder_->encoder_queue_checker_);
   JNIEnv* jni = AttachCurrentThreadIfNeeded();
   ScopedLocalRefFrame local_ref_frame(jni);
 
@@ -468,7 +465,7 @@ int32_t MediaCodecVideoEncoder::InitEncodeInternal(int width,
                                                    int kbps,
                                                    int fps,
                                                    bool use_surface) {
-  RTC_DCHECK_CALLED_SEQUENTIALLY(&encoder_queue_checker_);
+  RTC_DCHECK_RUN_ON(&encoder_queue_checker_);
   if (sw_fallback_required_) {
     return WEBRTC_VIDEO_CODEC_OK;
   }
@@ -595,7 +592,7 @@ int32_t MediaCodecVideoEncoder::InitEncodeInternal(int width,
 int32_t MediaCodecVideoEncoder::Encode(
     const VideoFrame& frame,
     const std::vector<VideoFrameType>* frame_types) {
-  RTC_DCHECK_CALLED_SEQUENTIALLY(&encoder_queue_checker_);
+  RTC_DCHECK_RUN_ON(&encoder_queue_checker_);
   if (sw_fallback_required_)
     return WEBRTC_VIDEO_CODEC_FALLBACK_SOFTWARE;
   JNIEnv* jni = AttachCurrentThreadIfNeeded();
@@ -753,7 +750,7 @@ int32_t MediaCodecVideoEncoder::Encode(
 
 bool MediaCodecVideoEncoder::MaybeReconfigureEncoder(JNIEnv* jni,
                                                      const VideoFrame& frame) {
-  RTC_DCHECK_CALLED_SEQUENTIALLY(&encoder_queue_checker_);
+  RTC_DCHECK_RUN_ON(&encoder_queue_checker_);
 
   bool is_texture = IsTextureFrame(jni, frame);
   const bool reconfigure_due_to_format = is_texture != use_surface_;
@@ -798,7 +795,7 @@ bool MediaCodecVideoEncoder::EncodeByteBuffer(JNIEnv* jni,
                                               bool key_frame,
                                               const VideoFrame& frame,
                                               int input_buffer_index) {
-  RTC_DCHECK_CALLED_SEQUENTIALLY(&encoder_queue_checker_);
+  RTC_DCHECK_RUN_ON(&encoder_queue_checker_);
   RTC_CHECK(!use_surface_);
 
   rtc::scoped_refptr<I420BufferInterface> i420_buffer =
@@ -861,7 +858,7 @@ bool MediaCodecVideoEncoder::EncodeJavaFrame(JNIEnv* jni,
 
 int32_t MediaCodecVideoEncoder::RegisterEncodeCompleteCallback(
     EncodedImageCallback* callback) {
-  RTC_DCHECK_CALLED_SEQUENTIALLY(&encoder_queue_checker_);
+  RTC_DCHECK_RUN_ON(&encoder_queue_checker_);
   JNIEnv* jni = AttachCurrentThreadIfNeeded();
   ScopedLocalRefFrame local_ref_frame(jni);
   callback_ = callback;
@@ -869,7 +866,7 @@ int32_t MediaCodecVideoEncoder::RegisterEncodeCompleteCallback(
 }
 
 int32_t MediaCodecVideoEncoder::Release() {
-  RTC_DCHECK_CALLED_SEQUENTIALLY(&encoder_queue_checker_);
+  RTC_DCHECK_RUN_ON(&encoder_queue_checker_);
   if (!inited_) {
     return WEBRTC_VIDEO_CODEC_OK;
   }
@@ -900,17 +897,16 @@ int32_t MediaCodecVideoEncoder::Release() {
   return WEBRTC_VIDEO_CODEC_OK;
 }
 
-int32_t MediaCodecVideoEncoder::SetRateAllocation(
-    const VideoBitrateAllocation& rate_allocation,
-    uint32_t frame_rate) {
-  RTC_DCHECK_CALLED_SEQUENTIALLY(&encoder_queue_checker_);
-  const uint32_t new_bit_rate = rate_allocation.get_sum_kbps();
+void MediaCodecVideoEncoder::SetRates(const RateControlParameters& parameters) {
+  RTC_DCHECK_RUN_ON(&encoder_queue_checker_);
+  const uint32_t new_bit_rate = parameters.bitrate.get_sum_kbps();
   if (sw_fallback_required_)
-    return WEBRTC_VIDEO_CODEC_OK;
+    return;
+  uint32_t frame_rate = static_cast<uint32_t>(parameters.framerate_fps + 0.5);
   frame_rate =
       (frame_rate < MAX_ALLOWED_VIDEO_FPS) ? frame_rate : MAX_ALLOWED_VIDEO_FPS;
   if (last_set_bitrate_kbps_ == new_bit_rate && last_set_fps_ == frame_rate) {
-    return WEBRTC_VIDEO_CODEC_OK;
+    return;
   }
   JNIEnv* jni = AttachCurrentThreadIfNeeded();
   ScopedLocalRefFrame local_ref_frame(jni);
@@ -926,10 +922,7 @@ int32_t MediaCodecVideoEncoder::SetRateAllocation(
       rtc::dchecked_cast<int>(last_set_fps_));
   if (CheckException(jni) || !ret) {
     ProcessHWError(true /* reset_if_fallback_unavailable */);
-    return sw_fallback_required_ ? WEBRTC_VIDEO_CODEC_OK
-                                 : WEBRTC_VIDEO_CODEC_ERROR;
   }
-  return WEBRTC_VIDEO_CODEC_OK;
 }
 
 VideoEncoder::EncoderInfo MediaCodecVideoEncoder::GetEncoderInfo() const {
@@ -937,7 +930,7 @@ VideoEncoder::EncoderInfo MediaCodecVideoEncoder::GetEncoderInfo() const {
 }
 
 bool MediaCodecVideoEncoder::DeliverPendingOutputs(JNIEnv* jni) {
-  RTC_DCHECK_CALLED_SEQUENTIALLY(&encoder_queue_checker_);
+  RTC_DCHECK_RUN_ON(&encoder_queue_checker_);
 
   while (true) {
     ScopedJavaLocalRef<jobject> j_output_buffer_info =
@@ -996,8 +989,11 @@ bool MediaCodecVideoEncoder::DeliverPendingOutputs(JNIEnv* jni) {
     EncodedImageCallback::Result callback_result(
         EncodedImageCallback::Result::OK);
     if (callback_) {
-      std::unique_ptr<EncodedImage> image(
-          new EncodedImage(payload, payload_size, payload_size));
+      auto image = std::make_unique<EncodedImage>();
+      // The corresponding (and deprecated) java classes are not prepared for
+      // late calls to releaseOutputBuffer, so to keep things simple, make a
+      // copy here, and call releaseOutputBuffer before returning.
+      image->SetEncodedData(EncodedImageBuffer::Create(payload, payload_size));
       image->_encodedWidth = width_;
       image->_encodedHeight = height_;
       image->SetTimestamp(output_timestamp_);
@@ -1049,8 +1045,6 @@ bool MediaCodecVideoEncoder::DeliverPendingOutputs(JNIEnv* jni) {
         header.VerifyAndAllocateFragmentationHeader(1);
         header.fragmentationOffset[0] = 0;
         header.fragmentationLength[0] = image->size();
-        header.fragmentationPlType[0] = 0;
-        header.fragmentationTimeDiff[0] = 0;
         if (codec_type == kVideoCodecVP8) {
           int qp;
           if (vp8::GetQp(payload, payload_size, &qp)) {
@@ -1086,8 +1080,6 @@ bool MediaCodecVideoEncoder::DeliverPendingOutputs(JNIEnv* jni) {
         for (size_t i = 0; i < nalu_idxs.size(); i++) {
           header.fragmentationOffset[i] = nalu_idxs[i].payload_start_offset;
           header.fragmentationLength[i] = nalu_idxs[i].payload_size;
-          header.fragmentationPlType[i] = 0;
-          header.fragmentationTimeDiff[i] = 0;
         }
       }
 

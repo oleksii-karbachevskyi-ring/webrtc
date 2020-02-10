@@ -19,8 +19,8 @@
 #include "api/audio_codecs/audio_encoder.h"
 #include "api/crypto/crypto_options.h"
 #include "api/function_view.h"
-#include "api/media_transport_interface.h"
 #include "api/task_queue/task_queue_factory.h"
+#include "modules/rtp_rtcp/include/report_block_data.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp.h"
 #include "modules/rtp_rtcp/source/rtp_sender_audio.h"
 
@@ -34,8 +34,18 @@ class RtpTransportControllerSendInterface;
 
 struct CallSendStatistics {
   int64_t rttMs;
-  size_t bytesSent;
+  int64_t payload_bytes_sent;
+  int64_t header_and_padding_bytes_sent;
+  // https://w3c.github.io/webrtc-stats/#dom-rtcoutboundrtpstreamstats-retransmittedbytessent
+  uint64_t retransmitted_bytes_sent;
   int packetsSent;
+  // https://w3c.github.io/webrtc-stats/#dom-rtcoutboundrtpstreamstats-retransmittedpacketssent
+  uint64_t retransmitted_packets_sent;
+  // A snapshot of Report Blocks with additional data of interest to statistics.
+  // Within this list, the sender-source SSRC pair is unique and per-pair the
+  // ReportBlockData represents the latest Report Block that was received for
+  // that pair.
+  std::vector<ReportBlockData> report_block_datas;
 };
 
 // See section 6.4.2 in http://www.ietf.org/rfc/rfc3550.txt for details.
@@ -66,7 +76,6 @@ class ChannelSendInterface {
       rtc::FunctionView<void(std::unique_ptr<AudioEncoder>*)> modifier) = 0;
   virtual void CallEncoder(rtc::FunctionView<void(AudioEncoder*)> modifier) = 0;
 
-  virtual void SetLocalSSRC(uint32_t ssrc) = 0;
   // Use 0 to indicate that the extension should not be registered.
   virtual void SetRid(const std::string& rid,
                       int extension_id,
@@ -95,9 +104,6 @@ class ChannelSendInterface {
       std::unique_ptr<AudioFrame> audio_frame) = 0;
   virtual RtpRtcp* GetRtpRtcp() const = 0;
 
-  virtual void OnTwccBasedUplinkPacketLossRate(float packet_loss_rate) = 0;
-  virtual void OnRecoverableUplinkPacketLossRate(
-      float recoverable_packet_loss_rate) = 0;
   // In RTP we currently rely on RTCP packets (|ReceivedRTCPPacket|) to inform
   // about RTT.
   // In media transport we rely on the TargetTransferRateObserver instead.
@@ -121,7 +127,6 @@ std::unique_ptr<ChannelSendInterface> CreateChannelSend(
     Clock* clock,
     TaskQueueFactory* task_queue_factory,
     ProcessThread* module_process_thread,
-    MediaTransportInterface* media_transport,
     OverheadObserver* overhead_observer,
     Transport* rtp_transport,
     RtcpRttStats* rtcp_rtt_stats,
@@ -129,7 +134,8 @@ std::unique_ptr<ChannelSendInterface> CreateChannelSend(
     FrameEncryptorInterface* frame_encryptor,
     const webrtc::CryptoOptions& crypto_options,
     bool extmap_allow_mixed,
-    int rtcp_report_interval_ms);
+    int rtcp_report_interval_ms,
+    uint32_t ssrc);
 
 }  // namespace voe
 }  // namespace webrtc

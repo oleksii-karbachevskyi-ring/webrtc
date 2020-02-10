@@ -8,13 +8,15 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include "media/base/rtp_data_engine.h"
+
 #include <string.h>
+
 #include <memory>
 #include <string>
 
 #include "media/base/fake_network_interface.h"
 #include "media/base/media_constants.h"
-#include "media/base/rtp_data_engine.h"
 #include "media/base/rtp_utils.h"
 #include "rtc_base/copy_on_write_buffer.h"
 #include "rtc_base/fake_clock.h"
@@ -49,7 +51,7 @@ class FakeDataReceiver : public sigslot::has_slots<> {
   cricket::ReceiveDataParams last_received_data_params_;
 };
 
-class RtpDataMediaChannelTest : public testing::Test {
+class RtpDataMediaChannelTest : public ::testing::Test {
  protected:
   virtual void SetUp() {
     // Seed needed for each test to satisfy expectations.
@@ -58,9 +60,7 @@ class RtpDataMediaChannelTest : public testing::Test {
     receiver_.reset(new FakeDataReceiver());
   }
 
-  void SetNow(double now) {
-    clock_.SetTimeNanos(now * rtc::kNumNanosecsPerSec);
-  }
+  void SetNow(double now) { clock_.SetTime(webrtc::Timestamp::seconds(now)); }
 
   cricket::RtpDataEngine* CreateEngine() {
     cricket::RtpDataEngine* dme = new cricket::RtpDataEngine();
@@ -75,7 +75,7 @@ class RtpDataMediaChannelTest : public testing::Test {
     cricket::MediaConfig config;
     cricket::RtpDataMediaChannel* channel =
         static_cast<cricket::RtpDataMediaChannel*>(dme->CreateChannel(config));
-    channel->SetInterface(iface_.get(), /*media_transport=*/nullptr);
+    channel->SetInterface(iface_.get(), webrtc::MediaTransportConfig());
     channel->SignalDataReceived.connect(receiver_.get(),
                                         &FakeDataReceiver::OnDataReceived);
     return channel;

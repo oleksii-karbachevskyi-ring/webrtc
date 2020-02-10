@@ -14,7 +14,6 @@
 #include <string>
 #include <utility>
 
-#include "absl/memory/memory.h"
 #include "media/sctp/sctp_transport_internal.h"
 #include "pc/sctp_utils.h"
 #include "rtc_base/checks.h"
@@ -27,6 +26,40 @@ namespace webrtc {
 
 static size_t kMaxQueuedReceivedDataBytes = 16 * 1024 * 1024;
 static size_t kMaxQueuedSendDataBytes = 16 * 1024 * 1024;
+
+namespace {
+
+static std::atomic<int> g_unique_id{0};
+
+int GenerateUniqueId() {
+  return ++g_unique_id;
+}
+
+}  // namespace
+
+InternalDataChannelInit::InternalDataChannelInit(const DataChannelInit& base)
+    : DataChannelInit(base), open_handshake_role(kOpener) {
+  // If the channel is externally negotiated, do not send the OPEN message.
+  if (base.negotiated) {
+    open_handshake_role = kNone;
+  } else {
+    // Datachannel is externally negotiated. Ignore the id value.
+    // Specified in createDataChannel, WebRTC spec section 6.1 bullet 13.
+    id = -1;
+  }
+  // Backwards compatibility: If base.maxRetransmits or base.maxRetransmitTime
+  // have been set to -1, unset them.
+  if (maxRetransmits && *maxRetransmits == -1) {
+    RTC_LOG(LS_ERROR)
+        << "Accepting maxRetransmits = -1 for backwards compatibility";
+    maxRetransmits = absl::nullopt;
+  }
+  if (maxRetransmitTime && *maxRetransmitTime == -1) {
+    RTC_LOG(LS_ERROR)
+        << "Accepting maxRetransmitTime = -1 for backwards compatibility";
+    maxRetransmitTime = absl::nullopt;
+  }
+}
 
 bool SctpSidAllocator::AllocateSid(rtc::SSLRole role, int* sid) {
   int potential_sid = (role == rtc::SSL_CLIENT) ? 0 : 1;
@@ -114,13 +147,16 @@ rtc::scoped_refptr<DataChannel> DataChannel::Create(
 }
 
 bool DataChannel::IsSctpLike(cricket::DataChannelType type) {
-  return type == cricket::DCT_SCTP || type == cricket::DCT_MEDIA_TRANSPORT;
+  return type == cricket::DCT_SCTP || type == cricket::DCT_MEDIA_TRANSPORT ||
+         type == cricket::DCT_DATA_CHANNEL_TRANSPORT ||
+         type == cricket::DCT_DATA_CHANNEL_TRANSPORT_SCTP;
 }
 
 DataChannel::DataChannel(DataChannelProviderInterface* provider,
                          cricket::DataChannelType dct,
                          const std::string& label)
-    : label_(label),
+    : internal_id_(GenerateUniqueId()),
+      label_(label),
       observer_(nullptr),
       state_(kConnecting),
       messages_sent_(0),
@@ -140,21 +176,22 @@ DataChannel::DataChannel(DataChannelProviderInterface* provider,
 
 bool DataChannel::Init(const InternalDataChannelInit& config) {
   if (data_channel_type_ == cricket::DCT_RTP) {
-    if (config.reliable || config.id != -1 || config.maxRetransmits != -1 ||
-        config.maxRetransmitTime != -1) {
+    if (config.reliable || config.id != -1 || config.maxRetransmits ||
+        config.maxRetransmitTime) {
       RTC_LOG(LS_ERROR) << "Failed to initialize the RTP data channel due to "
                            "invalid DataChannelInit.";
       return false;
     }
     handshake_state_ = kHandshakeReady;
   } else if (IsSctpLike(data_channel_type_)) {
-    if (config.id < -1 || config.maxRetransmits < -1 ||
-        config.maxRetransmitTime < -1) {
+    if (config.id < -1 ||
+        (config.maxRetransmits && *config.maxRetransmits < 0) ||
+        (config.maxRetransmitTime && *config.maxRetransmitTime < 0)) {
       RTC_LOG(LS_ERROR) << "Failed to initialize the SCTP data channel due to "
                            "invalid DataChannelInit.";
       return false;
     }
-    if (config.maxRetransmits != -1 && config.maxRetransmitTime != -1) {
+    if (config.maxRetransmits && config.maxRetransmitTime) {
       RTC_LOG(LS_ERROR)
           << "maxRetransmits and maxRetransmitTime should not be both set.";
       return false;
@@ -206,7 +243,7 @@ bool DataChannel::reliable() const {
   if (data_channel_type_ == cricket::DCT_RTP) {
     return false;
   } else {
-    return config_.maxRetransmits == -1 && config_.maxRetransmitTime == -1;
+    return !config_.maxRetransmits && !config_.maxRetransmitTime;
   }
 }
 
@@ -322,9 +359,10 @@ void DataChannel::OnTransportChannelCreated() {
   }
 }
 
-void DataChannel::OnTransportChannelDestroyed() {
-  // The SctpTransport is going away (for example, because the SCTP m= section
-  // was rejected), so we need to close abruptly.
+void DataChannel::OnTransportChannelClosed() {
+  // The SctpTransport is unusable (for example, because the SCTP m= section
+  // was rejected, or because the DTLS transport closed), so we need to close
+  // abruptly.
   CloseAbruptly();
 }
 
@@ -388,7 +426,7 @@ void DataChannel::OnDataReceived(const cricket::ReceiveDataParams& params,
   }
 
   bool binary = (params.type == cricket::DMT_BINARY);
-  auto buffer = absl::make_unique<DataBuffer>(payload, binary);
+  auto buffer = std::make_unique<DataBuffer>(payload, binary);
   if (state_ == kOpen && observer_) {
     ++messages_received_;
     bytes_received_ += buffer->size();
@@ -575,8 +613,10 @@ bool DataChannel::SendDataMessage(const DataBuffer& buffer,
              "because the OPEN_ACK message has not been received.";
     }
 
-    send_params.max_rtx_count = config_.maxRetransmits;
-    send_params.max_rtx_ms = config_.maxRetransmitTime;
+    send_params.max_rtx_count =
+        config_.maxRetransmits ? *config_.maxRetransmits : -1;
+    send_params.max_rtx_ms =
+        config_.maxRetransmitTime ? *config_.maxRetransmitTime : -1;
     send_params.sid = config_.id;
   } else {
     send_params.ssrc = send_ssrc_;
@@ -623,7 +663,7 @@ bool DataChannel::QueueSendDataMessage(const DataBuffer& buffer) {
     RTC_LOG(LS_ERROR) << "Can't buffer any more data for the data channel.";
     return false;
   }
-  queued_send_data_.PushBack(absl::make_unique<DataBuffer>(buffer));
+  queued_send_data_.PushBack(std::make_unique<DataBuffer>(buffer));
   return true;
 }
 
@@ -638,7 +678,7 @@ void DataChannel::SendQueuedControlMessages() {
 }
 
 void DataChannel::QueueControlMessage(const rtc::CopyOnWriteBuffer& buffer) {
-  queued_control_data_.PushBack(absl::make_unique<DataBuffer>(buffer, true));
+  queued_control_data_.PushBack(std::make_unique<DataBuffer>(buffer, true));
 }
 
 bool DataChannel::SendControlMessage(const rtc::CopyOnWriteBuffer& buffer) {
@@ -676,6 +716,11 @@ bool DataChannel::SendControlMessage(const rtc::CopyOnWriteBuffer& buffer) {
     CloseAbruptly();
   }
   return retval;
+}
+
+// static
+void DataChannel::ResetInternalIdAllocatorForTesting(int new_value) {
+  g_unique_id = new_value;
 }
 
 }  // namespace webrtc

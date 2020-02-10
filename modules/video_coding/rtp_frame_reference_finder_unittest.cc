@@ -13,9 +13,11 @@
 #include <map>
 #include <set>
 #include <utility>
+#include <vector>
 
 #include "modules/video_coding/frame_object.h"
 #include "modules/video_coding/packet_buffer.h"
+#include "modules/video_coding/rtp_frame_reference_finder.h"
 #include "rtc_base/random.h"
 #include "rtc_base/ref_count.h"
 #include "system_wrappers/include/clock.h"
@@ -24,39 +26,49 @@
 namespace webrtc {
 namespace video_coding {
 
-class FakePacketBuffer : public PacketBuffer {
- public:
-  FakePacketBuffer() : PacketBuffer(nullptr, 0, 0, nullptr) {}
+namespace {
+std::unique_ptr<RtpFrameObject> CreateFrame(
+    uint16_t seq_num_start,
+    uint16_t seq_num_end,
+    bool keyframe,
+    VideoCodecType codec,
+    const RTPVideoTypeHeader& video_type_header,
+    const FrameMarking& frame_markings) {
+  RTPVideoHeader video_header;
+  video_header.frame_type = keyframe ? VideoFrameType::kVideoFrameKey
+                                     : VideoFrameType::kVideoFrameDelta;
+  video_header.video_type_header = video_type_header;
+  video_header.frame_marking = frame_markings;
 
-  VCMPacket* GetPacket(uint16_t seq_num) override {
-    auto packet_it = packets_.find(seq_num);
-    return packet_it == packets_.end() ? nullptr : &packet_it->second;
-  }
-
-  bool InsertPacket(VCMPacket* packet) override {
-    packets_[packet->seqNum] = *packet;
-    return true;
-  }
-
-  bool GetBitstream(const RtpFrameObject& frame,
-                    uint8_t* destination) override {
-    return true;
-  }
-
-  void ReturnFrame(RtpFrameObject* frame) override {
-    packets_.erase(frame->first_seq_num());
-  }
-
- private:
-  std::map<uint16_t, VCMPacket> packets_;
-};
+  // clang-format off
+  return std::make_unique<RtpFrameObject>(
+      seq_num_start,
+      seq_num_end,
+      /*markerBit=*/true,
+      /*times_nacked=*/0,
+      /*first_packet_received_time=*/0,
+      /*last_packet_received_time=*/0,
+      /*rtp_timestamp=*/0,
+      /*ntp_time_ms=*/0,
+      VideoSendTiming(),
+      /*payload_type=*/0,
+      codec,
+      kVideoRotation_0,
+      VideoContentType::UNSPECIFIED,
+      video_header,
+      /*color_space=*/absl::nullopt,
+      /*generic_descriptor=*/absl::nullopt,
+      RtpPacketInfos(),
+      EncodedImageBuffer::Create(/*size=*/0));
+  // clang-format on
+}
+}  // namespace
 
 class TestRtpFrameReferenceFinder : public ::testing::Test,
                                     public OnCompleteFrameCallback {
  protected:
   TestRtpFrameReferenceFinder()
       : rand_(0x8739211),
-        ref_packet_buffer_(new FakePacketBuffer()),
         reference_finder_(new RtpFrameReferenceFinder(this)),
         frames_from_callback_(FrameComp()) {}
 
@@ -79,19 +91,10 @@ class TestRtpFrameReferenceFinder : public ::testing::Test,
   void InsertGeneric(uint16_t seq_num_start,
                      uint16_t seq_num_end,
                      bool keyframe) {
-    VCMPacket packet;
-    packet.video_header.codec = kVideoCodecGeneric;
-    packet.seqNum = seq_num_start;
-    packet.frameType = keyframe ? VideoFrameType::kVideoFrameKey
-                                : VideoFrameType::kVideoFrameDelta;
-    ref_packet_buffer_->InsertPacket(&packet);
+    std::unique_ptr<RtpFrameObject> frame =
+        CreateFrame(seq_num_start, seq_num_end, keyframe, kVideoCodecGeneric,
+                    RTPVideoTypeHeader(), FrameMarking());
 
-    packet.seqNum = seq_num_end;
-    packet.video_header.is_last_packet_in_frame = true;
-    ref_packet_buffer_->InsertPacket(&packet);
-
-    std::unique_ptr<RtpFrameObject> frame(new RtpFrameObject(
-        ref_packet_buffer_, seq_num_start, seq_num_end, 0, 0, 0, 0));
     reference_finder_->ManageFrame(std::move(frame));
   }
 
@@ -102,29 +105,16 @@ class TestRtpFrameReferenceFinder : public ::testing::Test,
                  uint8_t tid = kNoTemporalIdx,
                  int32_t tl0 = kNoTl0PicIdx,
                  bool sync = false) {
-    VCMPacket packet;
-    packet.video_header.codec = kVideoCodecVP8;
-    packet.seqNum = seq_num_start;
-    packet.video_header.is_last_packet_in_frame =
-        (seq_num_start == seq_num_end);
-    packet.frameType = keyframe ? VideoFrameType::kVideoFrameKey
-                                : VideoFrameType::kVideoFrameDelta;
-    auto& vp8_header =
-        packet.video_header.video_type_header.emplace<RTPVideoHeaderVP8>();
+    RTPVideoHeaderVP8 vp8_header{};
     vp8_header.pictureId = pid % (1 << 15);
     vp8_header.temporalIdx = tid;
     vp8_header.tl0PicIdx = tl0;
     vp8_header.layerSync = sync;
-    ref_packet_buffer_->InsertPacket(&packet);
 
-    if (seq_num_start != seq_num_end) {
-      packet.seqNum = seq_num_end;
-      packet.video_header.is_last_packet_in_frame = true;
-      ref_packet_buffer_->InsertPacket(&packet);
-    }
+    std::unique_ptr<RtpFrameObject> frame =
+        CreateFrame(seq_num_start, seq_num_end, keyframe, kVideoCodecVP8,
+                    vp8_header, FrameMarking());
 
-    std::unique_ptr<RtpFrameObject> frame(new RtpFrameObject(
-        ref_packet_buffer_, seq_num_start, seq_num_end, 0, 0, 0, 0));
     reference_finder_->ManageFrame(std::move(frame));
   }
 
@@ -138,16 +128,7 @@ class TestRtpFrameReferenceFinder : public ::testing::Test,
                     bool up_switch = false,
                     bool inter_pic_predicted = true,
                     GofInfoVP9* ss = nullptr) {
-    VCMPacket packet;
-    auto& vp9_header =
-        packet.video_header.video_type_header.emplace<RTPVideoHeaderVP9>();
-    packet.timestamp = pid;
-    packet.video_header.codec = kVideoCodecVP9;
-    packet.seqNum = seq_num_start;
-    packet.video_header.is_last_packet_in_frame =
-        (seq_num_start == seq_num_end);
-    packet.frameType = keyframe ? VideoFrameType::kVideoFrameKey
-                                : VideoFrameType::kVideoFrameDelta;
+    RTPVideoHeaderVP9 vp9_header{};
     vp9_header.flexible_mode = false;
     vp9_header.picture_id = pid % (1 << 15);
     vp9_header.temporal_idx = tid;
@@ -159,17 +140,11 @@ class TestRtpFrameReferenceFinder : public ::testing::Test,
       vp9_header.ss_data_available = true;
       vp9_header.gof = *ss;
     }
-    ref_packet_buffer_->InsertPacket(&packet);
 
-    if (seq_num_start != seq_num_end) {
-      packet.video_header.is_last_packet_in_frame = true;
-      vp9_header.ss_data_available = false;
-      packet.seqNum = seq_num_end;
-      ref_packet_buffer_->InsertPacket(&packet);
-    }
+    std::unique_ptr<RtpFrameObject> frame =
+        CreateFrame(seq_num_start, seq_num_end, keyframe, kVideoCodecVP9,
+                    vp9_header, FrameMarking());
 
-    std::unique_ptr<RtpFrameObject> frame(new RtpFrameObject(
-        ref_packet_buffer_, seq_num_start, seq_num_end, 0, 0, 0, 0));
     reference_finder_->ManageFrame(std::move(frame));
   }
 
@@ -181,16 +156,7 @@ class TestRtpFrameReferenceFinder : public ::testing::Test,
                      uint8_t tid = kNoTemporalIdx,
                      bool inter = false,
                      std::vector<uint8_t> refs = std::vector<uint8_t>()) {
-    VCMPacket packet;
-    auto& vp9_header =
-        packet.video_header.video_type_header.emplace<RTPVideoHeaderVP9>();
-    packet.timestamp = pid;
-    packet.video_header.codec = kVideoCodecVP9;
-    packet.seqNum = seq_num_start;
-    packet.video_header.is_last_packet_in_frame =
-        (seq_num_start == seq_num_end);
-    packet.frameType = keyframe ? VideoFrameType::kVideoFrameKey
-                                : VideoFrameType::kVideoFrameDelta;
+    RTPVideoHeaderVP9 vp9_header{};
     vp9_header.inter_layer_predicted = inter;
     vp9_header.flexible_mode = true;
     vp9_header.picture_id = pid % (1 << 15);
@@ -200,16 +166,27 @@ class TestRtpFrameReferenceFinder : public ::testing::Test,
     vp9_header.num_ref_pics = refs.size();
     for (size_t i = 0; i < refs.size(); ++i)
       vp9_header.pid_diff[i] = refs[i];
-    ref_packet_buffer_->InsertPacket(&packet);
 
-    if (seq_num_start != seq_num_end) {
-      packet.seqNum = seq_num_end;
-      packet.video_header.is_last_packet_in_frame = true;
-      ref_packet_buffer_->InsertPacket(&packet);
-    }
+    std::unique_ptr<RtpFrameObject> frame =
+        CreateFrame(seq_num_start, seq_num_end, keyframe, kVideoCodecVP9,
+                    vp9_header, FrameMarking());
+    reference_finder_->ManageFrame(std::move(frame));
+  }
 
-    std::unique_ptr<RtpFrameObject> frame(new RtpFrameObject(
-        ref_packet_buffer_, seq_num_start, seq_num_end, 0, 0, 0, 0));
+  void InsertH264(uint16_t seq_num_start,
+                  uint16_t seq_num_end,
+                  bool keyframe,
+                  uint8_t tid = kNoTemporalIdx,
+                  int32_t tl0 = kNoTl0PicIdx,
+                  bool sync = false) {
+    FrameMarking frame_marking{};
+    frame_marking.temporal_id = tid;
+    frame_marking.tl0_pic_idx = tl0;
+    frame_marking.base_layer_sync = sync;
+
+    std::unique_ptr<RtpFrameObject> frame =
+        CreateFrame(seq_num_start, seq_num_end, keyframe, kVideoCodecH264,
+                    RTPVideoTypeHeader(), frame_marking);
     reference_finder_->ManageFrame(std::move(frame));
   }
 
@@ -254,6 +231,11 @@ class TestRtpFrameReferenceFinder : public ::testing::Test,
   }
 
   template <typename... T>
+  void CheckReferencesH264(int64_t pid, T... refs) const {
+    CheckReferences(pid, 0, refs...);
+  }
+
+  template <typename... T>
   void RefsToSet(std::set<int64_t>* m, int64_t ref, T... refs) const {
     m->insert(ref);
     RefsToSet(m, refs...);
@@ -262,7 +244,6 @@ class TestRtpFrameReferenceFinder : public ::testing::Test,
   void RefsToSet(std::set<int64_t>* m) const {}
 
   Random rand_;
-  rtc::scoped_refptr<FakePacketBuffer> ref_packet_buffer_;
   std::unique_ptr<RtpFrameReferenceFinder> reference_finder_;
   struct FrameComp {
     bool operator()(const std::pair<int64_t, uint8_t> f1,
@@ -1400,6 +1381,362 @@ TEST_F(TestRtpFrameReferenceFinder, Vp9GofZeroFrames) {
   ASSERT_EQ(2UL, frames_from_callback_.size());
   CheckReferencesVp9(pid, 0);
   CheckReferencesVp9(pid + 1, 0, pid);
+}
+
+TEST_F(TestRtpFrameReferenceFinder, H264KeyFrameReferences) {
+  uint16_t sn = Rand();
+  InsertH264(sn, sn, true);
+
+  ASSERT_EQ(1UL, frames_from_callback_.size());
+  CheckReferencesH264(sn);
+}
+
+// Test with 1 temporal layer.
+TEST_F(TestRtpFrameReferenceFinder, H264TemporalLayers_0) {
+  uint16_t sn = Rand();
+
+  InsertH264(sn, sn, true, 0, 1);
+  InsertH264(sn + 1, sn + 1, false, 0, 2);
+  InsertH264(sn + 2, sn + 2, false, 0, 3);
+  InsertH264(sn + 3, sn + 3, false, 0, 4);
+
+  ASSERT_EQ(4UL, frames_from_callback_.size());
+  CheckReferencesH264(sn);
+  CheckReferencesH264(sn + 1, sn);
+  CheckReferencesH264(sn + 2, sn + 1);
+  CheckReferencesH264(sn + 3, sn + 2);
+}
+
+TEST_F(TestRtpFrameReferenceFinder, H264DuplicateTl1Frames) {
+  uint16_t sn = Rand();
+
+  InsertH264(sn, sn, true, 0, 0);
+  InsertH264(sn + 1, sn + 1, false, 1, 0, true);
+  InsertH264(sn + 2, sn + 2, false, 0, 1);
+  InsertH264(sn + 3, sn + 3, false, 1, 1);
+  InsertH264(sn + 3, sn + 3, false, 1, 1);
+  InsertH264(sn + 4, sn + 4, false, 0, 2);
+  InsertH264(sn + 5, sn + 5, false, 1, 2);
+
+  ASSERT_EQ(6UL, frames_from_callback_.size());
+  CheckReferencesH264(sn);
+  CheckReferencesH264(sn + 1, sn);
+  CheckReferencesH264(sn + 2, sn);
+  CheckReferencesH264(sn + 3, sn + 1, sn + 2);
+  CheckReferencesH264(sn + 4, sn + 2);
+  CheckReferencesH264(sn + 5, sn + 3, sn + 4);
+}
+
+// Test with 1 temporal layer.
+TEST_F(TestRtpFrameReferenceFinder, H264TemporalLayersReordering_0) {
+  uint16_t sn = Rand();
+
+  InsertH264(sn, sn, true, 0, 1);
+  InsertH264(sn + 1, sn + 1, false, 0, 2);
+  InsertH264(sn + 3, sn + 3, false, 0, 4);
+  InsertH264(sn + 2, sn + 2, false, 0, 3);
+  InsertH264(sn + 5, sn + 5, false, 0, 6);
+  InsertH264(sn + 6, sn + 6, false, 0, 7);
+  InsertH264(sn + 4, sn + 4, false, 0, 5);
+
+  ASSERT_EQ(7UL, frames_from_callback_.size());
+  CheckReferencesH264(sn);
+  CheckReferencesH264(sn + 1, sn);
+  CheckReferencesH264(sn + 2, sn + 1);
+  CheckReferencesH264(sn + 3, sn + 2);
+  CheckReferencesH264(sn + 4, sn + 3);
+  CheckReferencesH264(sn + 5, sn + 4);
+  CheckReferencesH264(sn + 6, sn + 5);
+}
+
+// Test with 2 temporal layers in a 01 pattern.
+TEST_F(TestRtpFrameReferenceFinder, H264TemporalLayers_01) {
+  uint16_t sn = Rand();
+
+  InsertH264(sn, sn, true, 0, 255);
+  InsertH264(sn + 1, sn + 1, false, 1, 255, true);
+  InsertH264(sn + 2, sn + 2, false, 0, 0);
+  InsertH264(sn + 3, sn + 3, false, 1, 0);
+
+  ASSERT_EQ(4UL, frames_from_callback_.size());
+  CheckReferencesH264(sn);
+  CheckReferencesH264(sn + 1, sn);
+  CheckReferencesH264(sn + 2, sn);
+  CheckReferencesH264(sn + 3, sn + 1, sn + 2);
+}
+
+TEST_F(TestRtpFrameReferenceFinder, H264TemporalLayersMultiSn_01) {
+  uint16_t sn = Rand();
+
+  InsertH264(sn, sn + 3, true, 0, 255);
+  InsertH264(sn + 4, sn + 5, false, 1, 255, true);
+  InsertH264(sn + 6, sn + 8, false, 0, 0);
+  InsertH264(sn + 9, sn + 9, false, 1, 0);
+
+  ASSERT_EQ(4UL, frames_from_callback_.size());
+  CheckReferencesH264(sn + 3);
+  CheckReferencesH264(sn + 5, sn + 3);
+  CheckReferencesH264(sn + 8, sn + 3);
+  CheckReferencesH264(sn + 9, sn + 5, sn + 8);
+}
+
+// Test with 2 temporal layers in a 01 pattern.
+TEST_F(TestRtpFrameReferenceFinder, H264TemporalLayersReordering_01) {
+  uint16_t sn = Rand();
+
+  InsertH264(sn + 1, sn + 1, false, 1, 255, true);
+  InsertH264(sn, sn, true, 0, 255);
+  InsertH264(sn + 3, sn + 3, false, 1, 0);
+  InsertH264(sn + 5, sn + 5, false, 1, 1);
+  InsertH264(sn + 2, sn + 2, false, 0, 0);
+  InsertH264(sn + 4, sn + 4, false, 0, 1);
+  InsertH264(sn + 6, sn + 6, false, 0, 2);
+  InsertH264(sn + 7, sn + 7, false, 1, 2);
+
+  ASSERT_EQ(8UL, frames_from_callback_.size());
+  CheckReferencesH264(sn);
+  CheckReferencesH264(sn + 1, sn);
+  CheckReferencesH264(sn + 2, sn);
+  CheckReferencesH264(sn + 3, sn + 1, sn + 2);
+  CheckReferencesH264(sn + 4, sn + 2);
+  CheckReferencesH264(sn + 5, sn + 3, sn + 4);
+  CheckReferencesH264(sn + 6, sn + 4);
+  CheckReferencesH264(sn + 7, sn + 5, sn + 6);
+}
+
+// Test with 3 temporal layers in a 0212 pattern.
+TEST_F(TestRtpFrameReferenceFinder, H264TemporalLayers_0212) {
+  uint16_t sn = Rand();
+
+  InsertH264(sn, sn, true, 0, 55);
+  InsertH264(sn + 1, sn + 1, false, 2, 55, true);
+  InsertH264(sn + 2, sn + 2, false, 1, 55, true);
+  InsertH264(sn + 3, sn + 3, false, 2, 55);
+  InsertH264(sn + 4, sn + 4, false, 0, 56);
+  InsertH264(sn + 5, sn + 5, false, 2, 56, true);
+  InsertH264(sn + 6, sn + 6, false, 1, 56, true);
+  InsertH264(sn + 7, sn + 7, false, 2, 56);
+  InsertH264(sn + 8, sn + 8, false, 0, 57);
+  InsertH264(sn + 9, sn + 9, false, 2, 57, true);
+  InsertH264(sn + 10, sn + 10, false, 1, 57, true);
+  InsertH264(sn + 11, sn + 11, false, 2, 57);
+
+  ASSERT_EQ(12UL, frames_from_callback_.size());
+  CheckReferencesH264(sn);
+  CheckReferencesH264(sn + 1, sn);
+  CheckReferencesH264(sn + 2, sn);
+  CheckReferencesH264(sn + 3, sn, sn + 1, sn + 2);
+  CheckReferencesH264(sn + 4, sn);
+  CheckReferencesH264(sn + 5, sn + 4);
+  CheckReferencesH264(sn + 6, sn + 4);
+  CheckReferencesH264(sn + 7, sn + 4, sn + 5, sn + 6);
+  CheckReferencesH264(sn + 8, sn + 4);
+  CheckReferencesH264(sn + 9, sn + 8);
+  CheckReferencesH264(sn + 10, sn + 8);
+  CheckReferencesH264(sn + 11, sn + 8, sn + 9, sn + 10);
+}
+
+// Test with 3 temporal layers in a 0212 pattern.
+TEST_F(TestRtpFrameReferenceFinder, H264TemporalLayersMissingFrame_0212) {
+  uint16_t sn = Rand();
+
+  InsertH264(sn, sn, true, 0, 55, false);
+  InsertH264(sn + 2, sn + 2, false, 1, 55, true);
+  InsertH264(sn + 3, sn + 3, false, 2, 55, false);
+
+  ASSERT_EQ(2UL, frames_from_callback_.size());
+  CheckReferencesH264(sn);
+  CheckReferencesH264(sn + 2, sn);
+}
+
+// Test with 3 temporal layers in a 0212 pattern.
+TEST_F(TestRtpFrameReferenceFinder, H264TemporalLayersReordering_0212) {
+  uint16_t sn = Rand();
+
+  InsertH264(sn + 1, sn + 1, false, 2, 55, true);
+  InsertH264(sn, sn, true, 0, 55, false);
+  InsertH264(sn + 2, sn + 2, false, 1, 55, true);
+  InsertH264(sn + 4, sn + 4, false, 0, 56, false);
+  InsertH264(sn + 5, sn + 5, false, 2, 56, false);
+  InsertH264(sn + 3, sn + 3, false, 2, 55, false);
+  InsertH264(sn + 7, sn + 7, false, 2, 56, false);
+  InsertH264(sn + 9, sn + 9, false, 2, 57, true);
+  InsertH264(sn + 6, sn + 6, false, 1, 56, false);
+  InsertH264(sn + 8, sn + 8, false, 0, 57, false);
+  InsertH264(sn + 11, sn + 11, false, 2, 57, false);
+  InsertH264(sn + 10, sn + 10, false, 1, 57, true);
+
+  ASSERT_EQ(12UL, frames_from_callback_.size());
+  CheckReferencesH264(sn);
+  CheckReferencesH264(sn + 1, sn);
+  CheckReferencesH264(sn + 2, sn);
+  CheckReferencesH264(sn + 3, sn, sn + 1, sn + 2);
+  CheckReferencesH264(sn + 4, sn);
+  CheckReferencesH264(sn + 5, sn + 2, sn + 3, sn + 4);
+  CheckReferencesH264(sn + 6, sn + 2, sn + 4);
+  CheckReferencesH264(sn + 7, sn + 4, sn + 5, sn + 6);
+  CheckReferencesH264(sn + 8, sn + 4);
+  CheckReferencesH264(sn + 9, sn + 8);
+  CheckReferencesH264(sn + 10, sn + 8);
+  CheckReferencesH264(sn + 11, sn + 8, sn + 9, sn + 10);
+}
+
+TEST_F(TestRtpFrameReferenceFinder, H264InsertManyFrames_0212) {
+  uint16_t sn = Rand();
+
+  const int keyframes_to_insert = 50;
+  const int frames_per_keyframe = 120;  // Should be a multiple of 4.
+  uint8_t tl0 = 128;
+
+  for (int k = 0; k < keyframes_to_insert; ++k) {
+    InsertH264(sn, sn, true, 0, tl0, false);
+    InsertH264(sn + 1, sn + 1, false, 2, tl0, true);
+    InsertH264(sn + 2, sn + 2, false, 1, tl0, true);
+    InsertH264(sn + 3, sn + 3, false, 2, tl0, false);
+    CheckReferencesH264(sn);
+    CheckReferencesH264(sn + 1, sn);
+    CheckReferencesH264(sn + 2, sn);
+    CheckReferencesH264(sn + 3, sn, sn + 1, sn + 2);
+    frames_from_callback_.clear();
+    ++tl0;
+
+    for (int f = 4; f < frames_per_keyframe; f += 4) {
+      uint16_t sf = sn + f;
+
+      InsertH264(sf, sf, false, 0, tl0, false);
+      InsertH264(sf + 1, sf + 1, false, 2, tl0, false);
+      InsertH264(sf + 2, sf + 2, false, 1, tl0, false);
+      InsertH264(sf + 3, sf + 3, false, 2, tl0, false);
+      CheckReferencesH264(sf, sf - 4);
+      CheckReferencesH264(sf + 1, sf, sf - 1, sf - 2);
+      CheckReferencesH264(sf + 2, sf, sf - 2);
+      CheckReferencesH264(sf + 3, sf, sf + 1, sf + 2);
+      frames_from_callback_.clear();
+      ++tl0;
+    }
+
+    sn += frames_per_keyframe;
+  }
+}
+
+TEST_F(TestRtpFrameReferenceFinder, H264LayerSync) {
+  uint16_t sn = Rand();
+
+  InsertH264(sn, sn, true, 0, 0, false);
+  InsertH264(sn + 1, sn + 1, false, 1, 0, true);
+  InsertH264(sn + 2, sn + 2, false, 0, 1, false);
+  ASSERT_EQ(3UL, frames_from_callback_.size());
+
+  InsertH264(sn + 4, sn + 4, false, 0, 2, false);
+  InsertH264(sn + 5, sn + 5, false, 1, 2, true);
+  InsertH264(sn + 6, sn + 6, false, 0, 3, false);
+  InsertH264(sn + 7, sn + 7, false, 1, 3, false);
+
+  ASSERT_EQ(7UL, frames_from_callback_.size());
+  CheckReferencesH264(sn);
+  CheckReferencesH264(sn + 1, sn);
+  CheckReferencesH264(sn + 2, sn);
+  CheckReferencesH264(sn + 4, sn + 2);
+  CheckReferencesH264(sn + 5, sn + 4);
+  CheckReferencesH264(sn + 6, sn + 4);
+  CheckReferencesH264(sn + 7, sn + 6, sn + 5);
+}
+
+TEST_F(TestRtpFrameReferenceFinder, H264Tl1SyncFrameAfterTl1Frame) {
+  InsertH264(1000, 1000, true, 0, 247, true);
+  InsertH264(1001, 1001, false, 0, 248, false);
+  InsertH264(1002, 1002, false, 1, 248, false);  // Will be dropped
+  InsertH264(1003, 1003, false, 1, 248, true);   // due to this frame.
+
+  ASSERT_EQ(3UL, frames_from_callback_.size());
+  CheckReferencesH264(1000);
+  CheckReferencesH264(1001, 1000);
+  CheckReferencesH264(1003, 1001);
+}
+
+TEST_F(TestRtpFrameReferenceFinder, H264DetectMissingFrame_0212) {
+  InsertH264(1, 1, true, 0, 1, false);
+  InsertH264(2, 2, false, 2, 1, true);
+  InsertH264(3, 3, false, 1, 1, true);
+  InsertH264(4, 4, false, 2, 1, false);
+
+  InsertH264(6, 6, false, 2, 2, false);
+  InsertH264(7, 7, false, 1, 2, false);
+  InsertH264(8, 8, false, 2, 2, false);
+  ASSERT_EQ(4UL, frames_from_callback_.size());
+
+  InsertH264(5, 5, false, 0, 2, false);
+  ASSERT_EQ(8UL, frames_from_callback_.size());
+
+  CheckReferencesH264(1);
+  CheckReferencesH264(2, 1);
+  CheckReferencesH264(3, 1);
+  CheckReferencesH264(4, 3, 2, 1);
+
+  CheckReferencesH264(5, 1);
+  CheckReferencesH264(6, 5, 4, 3);
+  CheckReferencesH264(7, 5, 3);
+  CheckReferencesH264(8, 7, 6, 5);
+}
+
+TEST_F(TestRtpFrameReferenceFinder, H264SequenceNumberWrap) {
+  uint16_t sn = 0xFFFF;
+
+  InsertH264(sn - 1, sn - 1, true, 0, 1);
+  InsertH264(sn, sn, false, 0, 2);
+  InsertH264(sn + 1, sn + 1, false, 0, 3);
+  InsertH264(sn + 2, sn + 2, false, 0, 4);
+
+  ASSERT_EQ(4UL, frames_from_callback_.size());
+  CheckReferencesH264(sn - 1);
+  CheckReferencesH264(sn, sn - 1);
+  CheckReferencesH264(sn + 1, sn);
+  CheckReferencesH264(sn + 2, sn + 1);
+}
+
+TEST_F(TestRtpFrameReferenceFinder, H264SequenceNumberWrapMulti) {
+  uint16_t sn = 0xFFFF;
+
+  InsertH264(sn - 3, sn - 2, true, 0, 1);
+  InsertH264(sn - 1, sn + 1, false, 0, 2);
+  InsertH264(sn + 2, sn + 3, false, 0, 3);
+  InsertH264(sn + 4, sn + 7, false, 0, 4);
+
+  ASSERT_EQ(4UL, frames_from_callback_.size());
+  CheckReferencesH264(sn - 2);
+  CheckReferencesH264(sn + 1, sn - 2);
+  CheckReferencesH264(sn + 3, sn + 1);
+  CheckReferencesH264(sn + 7, sn + 3);
+}
+
+TEST_F(TestRtpFrameReferenceFinder, H264Tl0PicIdxWrap) {
+  int numTl0Wraps = 1000;
+  int64_t sn = Rand();
+
+  for (int i = 0; i < numTl0Wraps; i++) {
+    for (int tl0 = 0; tl0 < 256; tl0 += 16, sn += 16) {
+      InsertH264(sn, sn, true, 0, tl0);
+      reference_finder_->ClearTo(sn);  // Too many stashed frames cause errors.
+
+      for (int k = 1; k < 8; k++) {
+        InsertH264(sn + k, sn + k, false, 0, tl0 + k);
+      }
+
+      // Skip a TL0 index.
+      for (int k = 9; k < 16; k++) {
+        InsertH264(sn + k, sn + k, false, 0, tl0 + k);
+      }
+
+      ASSERT_EQ(8UL, frames_from_callback_.size());
+
+      CheckReferencesH264(sn);
+      for (int k = 1; k < 8; k++) {
+        CheckReferencesH264(sn + k, sn + k - 1);
+      }
+
+      frames_from_callback_.clear();
+    }
+  }
 }
 
 }  // namespace video_coding

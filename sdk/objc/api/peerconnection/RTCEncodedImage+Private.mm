@@ -10,9 +10,44 @@
 
 #import "RTCEncodedImage+Private.h"
 
+#import <objc/runtime.h>
+
 #include "rtc_base/numerics/safe_conversions.h"
 
+// A simple wrapper around webrtc::EncodedImageBufferInterface to make it usable with associated
+// objects.
+@interface RTCWrappedEncodedImageBuffer : NSObject
+@property(nonatomic) rtc::scoped_refptr<webrtc::EncodedImageBufferInterface> buffer;
+- (instancetype)initWithEncodedImageBuffer:
+    (rtc::scoped_refptr<webrtc::EncodedImageBufferInterface>)buffer;
+@end
+@implementation RTCWrappedEncodedImageBuffer
+@synthesize buffer = _buffer;
+- (instancetype)initWithEncodedImageBuffer:
+    (rtc::scoped_refptr<webrtc::EncodedImageBufferInterface>)buffer {
+  self = [super init];
+  if (self) {
+    _buffer = buffer;
+  }
+  return self;
+}
+@end
+
 @implementation RTCEncodedImage (Private)
+
+- (rtc::scoped_refptr<webrtc::EncodedImageBufferInterface>)encodedData {
+  RTCWrappedEncodedImageBuffer *wrappedBuffer =
+      objc_getAssociatedObject(self, @selector(encodedData));
+  return wrappedBuffer.buffer;
+}
+
+- (void)setEncodedData:(rtc::scoped_refptr<webrtc::EncodedImageBufferInterface>)buffer {
+  return objc_setAssociatedObject(
+      self,
+      @selector(encodedData),
+      [[RTCWrappedEncodedImageBuffer alloc] initWithEncodedImageBuffer:buffer],
+      OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
 - (instancetype)initWithNativeEncodedImage:(const webrtc::EncodedImage &)encodedImage {
   if (self = [super init]) {

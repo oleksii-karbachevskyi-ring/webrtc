@@ -31,7 +31,7 @@ constexpr int kPixelsInHighResolution =
     960 * 540;  // CPU-adapted HD still counts.
 constexpr int kPixelsInMediumResolution = 640 * 360;
 constexpr int kBlockyQpThresholdVp8 = 70;
-constexpr int kBlockyQpThresholdVp9 = 60;  // TODO(ilnik): tune this value.
+constexpr int kBlockyQpThresholdVp9 = 180;
 constexpr int kMaxNumCachedBlockyFrames = 100;
 // TODO(ilnik): Add H264/HEVC thresholds.
 }  // namespace
@@ -51,10 +51,6 @@ VideoQualityObserver::VideoQualityObserver(VideoContentType content_type)
       time_in_blocky_video_ms_(0),
       content_type_(content_type),
       is_paused_(false) {}
-
-VideoQualityObserver::~VideoQualityObserver() {
-  UpdateHistograms();
-}
 
 void VideoQualityObserver::UpdateHistograms() {
   // Don't report anything on an empty video stream.
@@ -263,27 +259,27 @@ void VideoQualityObserver::OnStreamInactive() {
   is_paused_ = true;
 }
 
-uint32_t VideoQualityObserver::NumFreezes() {
+uint32_t VideoQualityObserver::NumFreezes() const {
   return freezes_durations_.NumSamples();
 }
 
-uint32_t VideoQualityObserver::NumPauses() {
+uint32_t VideoQualityObserver::NumPauses() const {
   return pauses_durations_.NumSamples();
 }
 
-uint32_t VideoQualityObserver::TotalFreezesDurationMs() {
+uint32_t VideoQualityObserver::TotalFreezesDurationMs() const {
   return freezes_durations_.Sum(kMinRequiredSamples).value_or(0);
 }
 
-uint32_t VideoQualityObserver::TotalPausesDurationMs() {
+uint32_t VideoQualityObserver::TotalPausesDurationMs() const {
   return pauses_durations_.Sum(kMinRequiredSamples).value_or(0);
 }
 
-uint32_t VideoQualityObserver::TotalFramesDurationMs() {
+uint32_t VideoQualityObserver::TotalFramesDurationMs() const {
   return last_frame_rendered_ms_ - first_frame_rendered_ms_;
 }
 
-double VideoQualityObserver::SumSquaredFrameDurationsSec() {
+double VideoQualityObserver::SumSquaredFrameDurationsSec() const {
   return sum_squared_interframe_delays_secs_;
 }
 

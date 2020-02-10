@@ -15,20 +15,24 @@
 #include <string>
 #include <vector>
 
-#include "absl/memory/memory.h"
+#include "api/task_queue/task_queue_factory.h"
 #include "api/test/audio_quality_analyzer_interface.h"
+#include "api/test/frame_generator_interface.h"
 #include "api/test/peerconnection_quality_test_fixture.h"
 #include "api/units/time_delta.h"
 #include "api/units/timestamp.h"
-#include "pc/test/frame_generator_capturer_video_track_source.h"
+#include "pc/video_track_source.h"
 #include "rtc_base/task_queue_for_test.h"
 #include "rtc_base/task_utils/repeating_task.h"
 #include "rtc_base/thread.h"
 #include "rtc_base/thread_annotations.h"
 #include "system_wrappers/include/clock.h"
+#include "test/field_trial.h"
 #include "test/pc/e2e/analyzer/video/single_process_encoded_image_data_injector.h"
 #include "test/pc/e2e/analyzer/video/video_quality_analyzer_injection_helper.h"
+#include "test/pc/e2e/analyzer_helper.h"
 #include "test/pc/e2e/peer_connection_quality_test_params.h"
+#include "test/pc/e2e/sdp/sdp_changer.h"
 #include "test/pc/e2e/test_peer.h"
 #include "test/testsupport/video_frame_writer.h"
 
@@ -40,10 +44,16 @@ class PeerConfigurerImpl final
  public:
   PeerConfigurerImpl(rtc::Thread* network_thread,
                      rtc::NetworkManager* network_manager)
-      : components_(absl::make_unique<InjectableComponents>(network_thread,
-                                                            network_manager)),
-        params_(absl::make_unique<Params>()) {}
+      : components_(std::make_unique<InjectableComponents>(network_thread,
+                                                           network_manager)),
+        params_(std::make_unique<Params>()) {}
 
+  PeerConfigurer* SetTaskQueueFactory(
+      std::unique_ptr<TaskQueueFactory> task_queue_factory) override {
+    components_->pcf_dependencies->task_queue_factory =
+        std::move(task_queue_factory);
+    return this;
+  }
   PeerConfigurer* SetCallFactory(
       std::unique_ptr<CallFactoryInterface> call_factory) override {
     components_->pcf_dependencies->call_factory = std::move(call_factory);
@@ -111,6 +121,14 @@ class PeerConfigurerImpl final
   PeerConfigurer* AddVideoConfig(
       PeerConnectionE2EQualityTestFixture::VideoConfig config) override {
     params_->video_configs.push_back(std::move(config));
+    video_generators_.push_back(nullptr);
+    return this;
+  }
+  PeerConfigurer* AddVideoConfig(
+      PeerConnectionE2EQualityTestFixture::VideoConfig config,
+      std::unique_ptr<test::FrameGeneratorInterface> generator) override {
+    params_->video_configs.push_back(std::move(config));
+    video_generators_.push_back(std::move(generator));
     return this;
   }
   PeerConfigurer* SetAudioConfig(
@@ -122,9 +140,18 @@ class PeerConfigurerImpl final
     params_->rtc_event_log_path = std::move(path);
     return this;
   }
+  PeerConfigurer* SetAecDumpPath(std::string path) override {
+    params_->aec_dump_path = std::move(path);
+    return this;
+  }
   PeerConfigurer* SetRTCConfiguration(
       PeerConnectionInterface::RTCConfiguration configuration) override {
     params_->rtc_configuration = std::move(configuration);
+    return this;
+  }
+  PeerConfigurer* SetBitrateParameters(
+      PeerConnectionInterface::BitrateParameters bitrate_params) override {
+    params_->bitrate_params = bitrate_params;
     return this;
   }
 
@@ -135,10 +162,42 @@ class PeerConfigurerImpl final
     return std::move(components_);
   }
   std::unique_ptr<Params> ReleaseParams() { return std::move(params_); }
+  std::vector<std::unique_ptr<test::FrameGeneratorInterface>>
+  ReleaseVideoGenerators() {
+    return std::move(video_generators_);
+  }
 
  private:
   std::unique_ptr<InjectableComponents> components_;
   std::unique_ptr<Params> params_;
+  std::vector<std::unique_ptr<test::FrameGeneratorInterface>> video_generators_;
+};
+
+class TestVideoCapturerVideoTrackSource : public VideoTrackSource {
+ public:
+  TestVideoCapturerVideoTrackSource(
+      std::unique_ptr<test::TestVideoCapturer> video_capturer,
+      bool is_screencast)
+      : VideoTrackSource(/*remote=*/false),
+        video_capturer_(std::move(video_capturer)),
+        is_screencast_(is_screencast) {}
+
+  ~TestVideoCapturerVideoTrackSource() = default;
+
+  void Start() { SetState(kLive); }
+
+  void Stop() { SetState(kMuted); }
+
+  bool is_screencast() const override { return is_screencast_; }
+
+ protected:
+  rtc::VideoSourceInterface<VideoFrame>* source() override {
+    return video_capturer_.get();
+  }
+
+ private:
+  std::unique_ptr<test::TestVideoCapturer> video_capturer_;
+  const bool is_screencast_;
 };
 
 class PeerConnectionE2EQualityTest
@@ -148,7 +207,11 @@ class PeerConnectionE2EQualityTest
       PeerConnectionE2EQualityTestFixture::VideoGeneratorType;
   using RunParams = PeerConnectionE2EQualityTestFixture::RunParams;
   using VideoConfig = PeerConnectionE2EQualityTestFixture::VideoConfig;
+  using VideoSimulcastConfig =
+      PeerConnectionE2EQualityTestFixture::VideoSimulcastConfig;
   using PeerConfigurer = PeerConnectionE2EQualityTestFixture::PeerConfigurer;
+  using QualityMetricsReporter =
+      PeerConnectionE2EQualityTestFixture::QualityMetricsReporter;
 
   PeerConnectionE2EQualityTest(
       std::string test_case_name,
@@ -163,10 +226,19 @@ class PeerConnectionE2EQualityTest
                     TimeDelta interval,
                     std::function<void(TimeDelta)> func) override;
 
+  void AddQualityMetricsReporter(std::unique_ptr<QualityMetricsReporter>
+                                     quality_metrics_reporter) override;
+
   void AddPeer(rtc::Thread* network_thread,
                rtc::NetworkManager* network_manager,
                rtc::FunctionView<void(PeerConfigurer*)> configurer) override;
   void Run(RunParams run_params) override;
+
+  TimeDelta GetRealTestDuration() const override {
+    rtc::CritScope crit(&lock_);
+    RTC_CHECK_NE(real_test_duration_, TimeDelta::Zero());
+    return real_test_duration_;
+  }
 
  private:
   struct ScheduledActivity {
@@ -187,26 +259,44 @@ class PeerConnectionE2EQualityTest
   //  * Generate video stream labels if some of them missed
   //  * Generate audio stream labels if some of them missed
   //  * Set video source generation mode if it is not specified
-  void SetDefaultValuesForMissingParams(std::vector<Params*> params);
+  void SetDefaultValuesForMissingParams(
+      std::vector<Params*> params,
+      std::vector<std::vector<std::unique_ptr<test::FrameGeneratorInterface>>*>
+          video_sources);
   // Validate peer's parameters, also ensure uniqueness of all video stream
   // labels.
-  void ValidateParams(const RunParams& run_params, std::vector<Params*> params);
-  void SetupVideoSink(rtc::scoped_refptr<RtpTransceiverInterface> transceiver,
-                      std::vector<VideoConfig> remote_video_configs);
+  void ValidateParams(
+      const RunParams& run_params,
+      std::vector<Params*> params,
+      std::vector<std::vector<std::unique_ptr<test::FrameGeneratorInterface>>*>
+          video_sources);
+  // For some functionality some field trials have to be enabled, so we will
+  // enable them here.
+  void SetupRequiredFieldTrials(const RunParams& run_params);
+  void OnTrackCallback(rtc::scoped_refptr<RtpTransceiverInterface> transceiver,
+                       std::vector<VideoConfig> remote_video_configs);
   // Have to be run on the signaling thread.
-  void SetupCallOnSignalingThread();
+  void SetupCallOnSignalingThread(const RunParams& run_params);
   void TearDownCallOnSignalingThread();
-  std::vector<rtc::scoped_refptr<FrameGeneratorCapturerVideoTrackSource>>
+  std::vector<rtc::scoped_refptr<TestVideoCapturerVideoTrackSource>>
   MaybeAddMedia(TestPeer* peer);
-  std::vector<rtc::scoped_refptr<FrameGeneratorCapturerVideoTrackSource>>
+  std::vector<rtc::scoped_refptr<TestVideoCapturerVideoTrackSource>>
   MaybeAddVideo(TestPeer* peer);
-  std::unique_ptr<test::FrameGenerator> CreateFrameGenerator(
-      const VideoConfig& video_config);
+  std::unique_ptr<test::TestVideoCapturer> CreateVideoCapturer(
+      const VideoConfig& video_config,
+      std::unique_ptr<test::FrameGeneratorInterface> generator,
+      std::unique_ptr<test::TestVideoCapturer::FramePreprocessor>
+          frame_preprocessor);
+  std::unique_ptr<test::FrameGeneratorInterface>
+  CreateScreenShareFrameGenerator(const VideoConfig& video_config);
   void MaybeAddAudio(TestPeer* peer);
-  void SetupCall();
+  void SetPeerCodecPreferences(TestPeer* peer, const RunParams& run_params);
+  void SetupCall(const RunParams& run_params);
+  void ExchangeOfferAnswer(SignalingInterceptor* signaling_interceptor);
+  void ExchangeIceCandidates(SignalingInterceptor* signaling_interceptor);
   void StartVideo(
-      const std::vector<
-          rtc::scoped_refptr<FrameGeneratorCapturerVideoTrackSource>>& sources);
+      const std::vector<rtc::scoped_refptr<TestVideoCapturerVideoTrackSource>>&
+          sources);
   void TearDownCall();
   test::VideoFrameWriter* MaybeCreateVideoWriter(
       absl::optional<std::string> file_name,
@@ -214,6 +304,7 @@ class PeerConnectionE2EQualityTest
   Timestamp Now() const;
 
   Clock* const clock_;
+  const std::unique_ptr<TaskQueueFactory> task_queue_factory_;
   std::string test_case_name_;
   std::unique_ptr<VideoQualityAnalyzerInjectionHelper>
       video_quality_analyzer_injection_helper_;
@@ -223,21 +314,27 @@ class PeerConnectionE2EQualityTest
 
   std::vector<std::unique_ptr<PeerConfigurerImpl>> peer_configurations_;
 
+  std::unique_ptr<test::ScopedFieldTrials> override_field_trials_ = nullptr;
+
   std::unique_ptr<TestPeer> alice_;
   std::unique_ptr<TestPeer> bob_;
+  std::vector<std::unique_ptr<QualityMetricsReporter>>
+      quality_metrics_reporters_;
 
-  std::vector<rtc::scoped_refptr<FrameGeneratorCapturerVideoTrackSource>>
+  std::vector<rtc::scoped_refptr<TestVideoCapturerVideoTrackSource>>
       alice_video_sources_;
-  std::vector<rtc::scoped_refptr<FrameGeneratorCapturerVideoTrackSource>>
+  std::vector<rtc::scoped_refptr<TestVideoCapturerVideoTrackSource>>
       bob_video_sources_;
   std::vector<std::unique_ptr<test::VideoFrameWriter>> video_writers_;
   std::vector<std::unique_ptr<rtc::VideoSinkInterface<VideoFrame>>>
       output_video_sinks_;
+  AnalyzerHelper analyzer_helper_;
 
   rtc::CriticalSection lock_;
   // Time when test call was started. Minus infinity means that call wasn't
   // started yet.
   Timestamp start_time_ RTC_GUARDED_BY(lock_) = Timestamp::MinusInfinity();
+  TimeDelta real_test_duration_ RTC_GUARDED_BY(lock_) = TimeDelta::Zero();
   // Queue of activities that were added before test call was started.
   // Activities from this queue will be posted on the |task_queue_| after test
   // call will be set up and then this queue will be unused.

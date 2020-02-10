@@ -18,6 +18,7 @@
 #include <stddef.h>  // size_t
 #include <stdlib.h>
 #include <string.h>
+
 #include <algorithm>
 #include <cmath>
 
@@ -36,34 +37,6 @@ extern "C" {
 #include "system_wrappers/include/metrics.h"
 
 namespace webrtc {
-namespace {
-enum class DelaySource {
-  kSystemDelay,    // The delay values come from the OS.
-  kDelayAgnostic,  // The delay values come from the DA-AEC.
-};
-
-constexpr int kMinDelayLogValue = -200;
-constexpr int kMaxDelayLogValue = 200;
-constexpr int kNumDelayLogBuckets = 100;
-
-void MaybeLogDelayAdjustment(int moved_ms, DelaySource source) {
-  if (moved_ms == 0)
-    return;
-  switch (source) {
-    case DelaySource::kSystemDelay:
-      RTC_HISTOGRAM_COUNTS("WebRTC.Audio.AecDelayAdjustmentMsSystemValue",
-                           moved_ms, kMinDelayLogValue, kMaxDelayLogValue,
-                           kNumDelayLogBuckets);
-      return;
-    case DelaySource::kDelayAgnostic:
-      RTC_HISTOGRAM_COUNTS("WebRTC.Audio.AecDelayAdjustmentMsAgnosticValue",
-                           moved_ms, kMinDelayLogValue, kMaxDelayLogValue,
-                           kNumDelayLogBuckets);
-      return;
-  }
-}
-}  // namespace
-
 // Buffer size (samples)
 static const size_t kBufferSizeBlocks = 250;  // 1 second of audio in 16 kHz.
 
@@ -181,25 +154,25 @@ __inline static float MulIm(float aRe, float aIm, float bRe, float bIm) {
 PowerLevel::PowerLevel()
     : framelevel(kSubCountLen + 1), averagelevel(kCountLen + 1) {}
 
-BlockBuffer::BlockBuffer() {
+Aec2BlockBuffer::Aec2BlockBuffer() {
   buffer_ = WebRtc_CreateBuffer(kBufferSizeBlocks, sizeof(float) * PART_LEN);
   RTC_CHECK(buffer_);
   ReInit();
 }
 
-BlockBuffer::~BlockBuffer() {
+Aec2BlockBuffer::~Aec2BlockBuffer() {
   WebRtc_FreeBuffer(buffer_);
 }
 
-void BlockBuffer::ReInit() {
+void Aec2BlockBuffer::ReInit() {
   WebRtc_InitBuffer(buffer_);
 }
 
-void BlockBuffer::Insert(const float block[PART_LEN]) {
+void Aec2BlockBuffer::Insert(const float block[PART_LEN]) {
   WebRtc_WriteBuffer(buffer_, block, 1);
 }
 
-void BlockBuffer::ExtractExtendedBlock(float extended_block[PART_LEN2]) {
+void Aec2BlockBuffer::ExtractExtendedBlock(float extended_block[PART_LEN2]) {
   float* block_ptr = NULL;
   RTC_DCHECK_LT(0, AvaliableSpace());
 
@@ -224,15 +197,15 @@ void BlockBuffer::ExtractExtendedBlock(float extended_block[PART_LEN2]) {
   }
 }
 
-int BlockBuffer::AdjustSize(int buffer_size_decrease) {
+int Aec2BlockBuffer::AdjustSize(int buffer_size_decrease) {
   return WebRtc_MoveReadPtr(buffer_, buffer_size_decrease);
 }
 
-size_t BlockBuffer::Size() {
+size_t Aec2BlockBuffer::Size() {
   return static_cast<int>(WebRtc_available_read(buffer_));
 }
 
-size_t BlockBuffer::AvaliableSpace() {
+size_t Aec2BlockBuffer::AvaliableSpace() {
   return WebRtc_available_write(buffer_);
 }
 
@@ -1864,15 +1837,11 @@ void WebRtcAec_ProcessFrames(AecCore* aec,
       // rounding, like -16.
       int move_elements = (aec->knownDelay - knownDelay - 32) / PART_LEN;
       int moved_elements = aec->farend_block_buffer_.AdjustSize(move_elements);
-      MaybeLogDelayAdjustment(moved_elements * (aec->sampFreq == 8000 ? 8 : 4),
-                              DelaySource::kSystemDelay);
       aec->knownDelay -= moved_elements * PART_LEN;
     } else {
       // 2 b) Apply signal based delay correction.
       int move_elements = SignalBasedDelayCorrection(aec);
       int moved_elements = aec->farend_block_buffer_.AdjustSize(move_elements);
-      MaybeLogDelayAdjustment(moved_elements * (aec->sampFreq == 8000 ? 8 : 4),
-                              DelaySource::kDelayAgnostic);
       int far_near_buffer_diff =
           aec->farend_block_buffer_.Size() -
           (aec->nearend_buffer_size + FRAME_LEN) / PART_LEN;

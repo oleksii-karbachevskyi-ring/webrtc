@@ -9,12 +9,12 @@
  */
 
 #include <stddef.h>
+
 #include <cstdint>
 #include <memory>
 #include <utility>
 #include <vector>
 
-#include "absl/memory/memory.h"
 #include "absl/types/optional.h"
 #include "api/scoped_refptr.h"
 #include "api/test/mock_video_decoder_factory.h"
@@ -44,8 +44,8 @@
 #include "test/gtest.h"
 #include "test/video_codec_settings.h"
 
-using testing::_;
-using testing::Return;
+using ::testing::_;
+using ::testing::Return;
 
 namespace webrtc {
 
@@ -53,9 +53,9 @@ constexpr const char* kMultiplexAssociatedCodecName = cricket::kVp9CodecName;
 const VideoCodecType kMultiplexAssociatedCodecType =
     PayloadStringToCodecType(kMultiplexAssociatedCodecName);
 
-class TestMultiplexAdapter
-    : public VideoCodecUnitTest,
-      public testing::WithParamInterface<bool /* supports_augmenting_data */> {
+class TestMultiplexAdapter : public VideoCodecUnitTest,
+                             public ::testing::WithParamInterface<
+                                 bool /* supports_augmenting_data */> {
  public:
   TestMultiplexAdapter()
       : decoder_factory_(new webrtc::MockVideoDecoderFactory),
@@ -64,13 +64,13 @@ class TestMultiplexAdapter
 
  protected:
   std::unique_ptr<VideoDecoder> CreateDecoder() override {
-    return absl::make_unique<MultiplexDecoderAdapter>(
+    return std::make_unique<MultiplexDecoderAdapter>(
         decoder_factory_.get(), SdpVideoFormat(kMultiplexAssociatedCodecName),
         supports_augmenting_data_);
   }
 
   std::unique_ptr<VideoEncoder> CreateEncoder() override {
-    return absl::make_unique<MultiplexEncoderAdapter>(
+    return std::make_unique<MultiplexEncoderAdapter>(
         encoder_factory_.get(), SdpVideoFormat(kMultiplexAssociatedCodecName),
         supports_augmenting_data_);
   }
@@ -94,7 +94,7 @@ class TestMultiplexAdapter
     rtc::scoped_refptr<AugmentedVideoFrameBuffer> augmented_video_frame_buffer =
         new rtc::RefCountedObject<AugmentedVideoFrameBuffer>(
             video_buffer, std::move(data), 16);
-    return absl::make_unique<VideoFrame>(
+    return std::make_unique<VideoFrame>(
         VideoFrame::Builder()
             .set_video_frame_buffer(augmented_video_frame_buffer)
             .set_timestamp_rtp(video_frame->timestamp())
@@ -105,21 +105,20 @@ class TestMultiplexAdapter
   }
 
   std::unique_ptr<VideoFrame> CreateI420AInputFrame() {
-    VideoFrame* input_frame = NextInputFrame();
+    VideoFrame input_frame = NextInputFrame();
     rtc::scoped_refptr<webrtc::I420BufferInterface> yuv_buffer =
-        input_frame->video_frame_buffer()->ToI420();
+        input_frame.video_frame_buffer()->ToI420();
     rtc::scoped_refptr<I420ABufferInterface> yuva_buffer = WrapI420ABuffer(
         yuv_buffer->width(), yuv_buffer->height(), yuv_buffer->DataY(),
         yuv_buffer->StrideY(), yuv_buffer->DataU(), yuv_buffer->StrideU(),
         yuv_buffer->DataV(), yuv_buffer->StrideV(), yuv_buffer->DataY(),
         yuv_buffer->StrideY(), rtc::KeepRefUntilDone(yuv_buffer));
-    return absl::make_unique<VideoFrame>(
-        VideoFrame::Builder()
-            .set_video_frame_buffer(yuva_buffer)
-            .set_timestamp_rtp(123)
-            .set_timestamp_ms(345)
-            .set_rotation(kVideoRotation_0)
-            .build());
+    return std::make_unique<VideoFrame>(VideoFrame::Builder()
+                                            .set_video_frame_buffer(yuva_buffer)
+                                            .set_timestamp_rtp(123)
+                                            .set_timestamp_ms(345)
+                                            .set_rotation(kVideoRotation_0)
+                                            .build());
   }
 
   std::unique_ptr<VideoFrame> CreateInputFrame(bool contains_alpha) {
@@ -127,14 +126,14 @@ class TestMultiplexAdapter
     if (contains_alpha) {
       video_frame = CreateI420AInputFrame();
     } else {
-      VideoFrame* next_frame = NextInputFrame();
-      video_frame = absl::make_unique<VideoFrame>(
+      VideoFrame next_frame = NextInputFrame();
+      video_frame = std::make_unique<VideoFrame>(
           VideoFrame::Builder()
-              .set_video_frame_buffer(next_frame->video_frame_buffer())
-              .set_timestamp_rtp(next_frame->timestamp())
-              .set_timestamp_ms(next_frame->render_time_ms())
-              .set_rotation(next_frame->rotation())
-              .set_id(next_frame->id())
+              .set_video_frame_buffer(next_frame.video_frame_buffer())
+              .set_timestamp_rtp(next_frame.timestamp())
+              .set_timestamp_ms(next_frame.render_time_ms())
+              .set_rotation(next_frame.rotation())
+              .set_id(next_frame.id())
               .build());
     }
     if (supports_augmenting_data_) {
@@ -171,12 +170,12 @@ class TestMultiplexAdapter
         yuva_buffer->StrideA(), yuva_buffer->DataU(), yuva_buffer->StrideU(),
         yuva_buffer->DataV(), yuva_buffer->StrideV(),
         rtc::KeepRefUntilDone(video_frame_buffer));
-    return absl::make_unique<VideoFrame>(VideoFrame::Builder()
-                                             .set_video_frame_buffer(axx_buffer)
-                                             .set_timestamp_rtp(123)
-                                             .set_timestamp_ms(345)
-                                             .set_rotation(kVideoRotation_0)
-                                             .build());
+    return std::make_unique<VideoFrame>(VideoFrame::Builder()
+                                            .set_video_frame_buffer(axx_buffer)
+                                            .set_timestamp_rtp(123)
+                                            .set_timestamp_ms(345)
+                                            .set_rotation(kVideoRotation_0)
+                                            .build());
   }
 
  private:
@@ -224,8 +223,7 @@ TEST_P(TestMultiplexAdapter, EncodeDecodeI420Frame) {
   ASSERT_TRUE(WaitForEncodedFrame(&encoded_frame, &codec_specific_info));
   EXPECT_EQ(kVideoCodecMultiplex, codec_specific_info.codecType);
 
-  EXPECT_EQ(WEBRTC_VIDEO_CODEC_OK,
-            decoder_->Decode(encoded_frame, false, &codec_specific_info, -1));
+  EXPECT_EQ(WEBRTC_VIDEO_CODEC_OK, decoder_->Decode(encoded_frame, false, -1));
   std::unique_ptr<VideoFrame> decoded_frame;
   absl::optional<uint8_t> decoded_qp;
   ASSERT_TRUE(WaitForDecodedFrame(&decoded_frame, &decoded_qp));
@@ -242,8 +240,7 @@ TEST_P(TestMultiplexAdapter, EncodeDecodeI420AFrame) {
   ASSERT_TRUE(WaitForEncodedFrame(&encoded_frame, &codec_specific_info));
   EXPECT_EQ(kVideoCodecMultiplex, codec_specific_info.codecType);
 
-  EXPECT_EQ(WEBRTC_VIDEO_CODEC_OK,
-            decoder_->Decode(encoded_frame, false, nullptr, 0));
+  EXPECT_EQ(WEBRTC_VIDEO_CODEC_OK, decoder_->Decode(encoded_frame, false, 0));
   std::unique_ptr<VideoFrame> decoded_frame;
   absl::optional<uint8_t> decoded_qp;
   ASSERT_TRUE(WaitForDecodedFrame(&decoded_frame, &decoded_qp));

@@ -11,12 +11,12 @@
 #include "modules/rtp_rtcp/source/rtp_sender_audio.h"
 
 #include <string.h>
+
 #include <memory>
 #include <utility>
 
 #include "absl/strings/match.h"
 #include "api/audio_codecs/audio_format.h"
-#include "modules/remote_bitrate_estimator/test/bwe_test_logging.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "modules/rtp_rtcp/source/byte_io.h"
 #include "modules/rtp_rtcp/source/rtp_header_extensions.h"
@@ -30,6 +30,7 @@ namespace webrtc {
 
 namespace {
 
+#if RTC_TRACE_EVENTS_ENABLED
 const char* FrameTypeToString(AudioFrameType frame_type) {
   switch (frame_type) {
     case AudioFrameType::kEmptyFrame:
@@ -40,6 +41,7 @@ const char* FrameTypeToString(AudioFrameType frame_type) {
       return "audio_cn";
   }
 }
+#endif
 
 }  // namespace
 
@@ -133,8 +135,10 @@ bool RTPSenderAudio::SendAudio(AudioFrameType frame_type,
                                uint32_t rtp_timestamp,
                                const uint8_t* payload_data,
                                size_t payload_size) {
+  #if RTC_TRACE_EVENTS_ENABLED
   TRACE_EVENT_ASYNC_STEP1("webrtc", "Audio", rtp_timestamp, "Send", "type",
                           FrameTypeToString(frame_type));
+  #endif
 
   // From RFC 4733:
   // A source has wide latitude as to how often it sends event updates. A
@@ -224,7 +228,8 @@ bool RTPSenderAudio::SendAudio(AudioFrameType frame_type,
   if (payload_size == 0 || payload_data == NULL) {
     if (frame_type == AudioFrameType::kEmptyFrame) {
       // we don't send empty audio RTP packets
-      // no error since we use it to drive DTMF when we use VAD
+      // no error since we use it to either drive DTMF when we use VAD, or
+      // enter DTX.
       return true;
     }
     return false;
@@ -254,8 +259,9 @@ bool RTPSenderAudio::SendAudio(AudioFrameType frame_type,
   TRACE_EVENT_ASYNC_END2("webrtc", "Audio", rtp_timestamp, "timestamp",
                          packet->Timestamp(), "seqnum",
                          packet->SequenceNumber());
-  bool send_result = LogAndSendToNetwork(
-      std::move(packet), kAllowRetransmission, RtpPacketSender::kHighPriority);
+  packet->set_packet_type(RtpPacketToSend::Type::kAudio);
+  packet->set_allow_retransmission(true);
+  bool send_result = rtp_sender_->SendToNetwork(std::move(packet));
   if (first_packet_sent_()) {
     RTC_LOG(LS_INFO) << "First audio RTP packet sent to pacer";
   }
@@ -338,29 +344,12 @@ bool RTPSenderAudio::SendTelephoneEventPacket(bool ended,
     dtmfbuffer[1] = E | R | volume;
     ByteWriter<uint16_t>::WriteBigEndian(dtmfbuffer + 2, duration);
 
-    result = LogAndSendToNetwork(std::move(packet), kAllowRetransmission,
-                                 RtpPacketSender::kHighPriority);
+    packet->set_packet_type(RtpPacketToSend::Type::kAudio);
+    packet->set_allow_retransmission(true);
+    result = rtp_sender_->SendToNetwork(std::move(packet));
     send_count--;
   } while (send_count > 0 && result);
 
   return result;
 }
-
-bool RTPSenderAudio::LogAndSendToNetwork(
-    std::unique_ptr<RtpPacketToSend> packet,
-    StorageType storage,
-    RtpPacketSender::Priority priority) {
-#if BWE_TEST_LOGGING_COMPILE_TIME_ENABLE
-  int64_t now_ms = clock_->TimeInMilliseconds();
-  BWE_TEST_LOGGING_PLOT_WITH_SSRC(1, "AudioTotBitrate_kbps", now_ms,
-                                  rtp_sender_->ActualSendBitrateKbit(),
-                                  packet->Ssrc());
-  BWE_TEST_LOGGING_PLOT_WITH_SSRC(1, "AudioNackBitrate_kbps", now_ms,
-                                  rtp_sender_->NackOverheadRate() / 1000,
-                                  packet->Ssrc());
-#endif
-
-  return rtp_sender_->SendToNetwork(std::move(packet), storage, priority);
-}
-
 }  // namespace webrtc

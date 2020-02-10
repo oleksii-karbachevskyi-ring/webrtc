@@ -8,6 +8,8 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <memory>
+
 #include "p2p/base/fake_port_allocator.h"
 #include "p2p/base/test_stun_server.h"
 #include "p2p/client/basic_port_allocator.h"
@@ -18,7 +20,6 @@
 #ifdef WEBRTC_ANDROID
 #include "pc/test/android_test_initializer.h"
 #endif
-#include "absl/memory/memory.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
 #include "api/create_peerconnection_factory.h"
@@ -27,6 +28,7 @@
 #include "api/video_codecs/builtin_video_decoder_factory.h"
 #include "api/video_codecs/builtin_video_encoder_factory.h"
 #include "pc/test/fake_audio_capture_module.h"
+#include "pc/test/mock_peer_connection_observers.h"
 #include "rtc_base/fake_network.h"
 #include "rtc_base/gunit.h"
 #include "rtc_base/strings/string_builder.h"
@@ -45,21 +47,26 @@ using ::testing::Pair;
 using ::testing::Values;
 
 constexpr int kIceCandidatesTimeout = 10000;
+constexpr int64_t kWaitTimeout = 10000;
 
 class PeerConnectionWrapperForIceTest : public PeerConnectionWrapper {
  public:
   using PeerConnectionWrapper::PeerConnectionWrapper;
 
-  // Adds a new ICE candidate to the first transport.
-  bool AddIceCandidate(cricket::Candidate* candidate) {
+  std::unique_ptr<IceCandidateInterface> CreateJsepCandidateForFirstTransport(
+      cricket::Candidate* candidate) {
     RTC_DCHECK(pc()->remote_description());
     const auto* desc = pc()->remote_description()->description();
     RTC_DCHECK(desc->contents().size() > 0);
     const auto& first_content = desc->contents()[0];
     candidate->set_transport_name(first_content.name);
-    std::unique_ptr<IceCandidateInterface> jsep_candidate =
-        CreateIceCandidate(first_content.name, 0, *candidate);
-    return pc()->AddIceCandidate(jsep_candidate.get());
+    return CreateIceCandidate(first_content.name, -1, *candidate);
+  }
+
+  // Adds a new ICE candidate to the first transport.
+  bool AddIceCandidate(cricket::Candidate* candidate) {
+    return pc()->AddIceCandidate(
+        CreateJsepCandidateForFirstTransport(candidate).get());
   }
 
   // Returns ICE candidates from the remote session description.
@@ -115,13 +122,13 @@ class PeerConnectionIceBaseTest : public ::testing::Test {
   WrapperPtr CreatePeerConnection(const RTCConfiguration& config) {
     auto* fake_network = NewFakeNetwork();
     auto port_allocator =
-        absl::make_unique<cricket::BasicPortAllocator>(fake_network);
+        std::make_unique<cricket::BasicPortAllocator>(fake_network);
     port_allocator->set_flags(cricket::PORTALLOCATOR_DISABLE_TCP |
                               cricket::PORTALLOCATOR_DISABLE_RELAY);
     port_allocator->set_step_delay(cricket::kMinimumStepDelay);
     RTCConfiguration modified_config = config;
     modified_config.sdp_semantics = sdp_semantics_;
-    auto observer = absl::make_unique<MockPeerConnectionObserver>();
+    auto observer = std::make_unique<MockPeerConnectionObserver>();
     auto port_allocator_copy = port_allocator.get();
     auto pc = pc_factory_->CreatePeerConnection(
         modified_config, std::move(port_allocator), nullptr, observer.get());
@@ -130,7 +137,7 @@ class PeerConnectionIceBaseTest : public ::testing::Test {
     }
 
     observer->SetPeerConnectionInterface(pc.get());
-    auto wrapper = absl::make_unique<PeerConnectionWrapperForIceTest>(
+    auto wrapper = std::make_unique<PeerConnectionWrapperForIceTest>(
         pc_factory_, pc, std::move(observer));
     wrapper->set_network(fake_network);
     wrapper->port_allocator_ = port_allocator_copy;
@@ -216,21 +223,33 @@ class PeerConnectionIceBaseTest : public ::testing::Test {
     PeerConnection* pc = static_cast<PeerConnection*>(pc_proxy->internal());
     for (const auto& transceiver : pc->GetTransceiversInternal()) {
       if (transceiver->media_type() == cricket::MEDIA_TYPE_AUDIO) {
-        // TODO(amithi): This test seems to be using a method that should not
-        // be public |rtp_packet_transport|. Because the test is not mocking
-        // the channels or transceiver, workaround will be to |static_cast|
-        // the channel until the method is rewritten.
-        cricket::BaseChannel* channel = static_cast<cricket::BaseChannel*>(
-            transceiver->internal()->channel());
-        if (channel) {
-          auto dtls_transport = static_cast<cricket::DtlsTransportInternal*>(
-              channel->rtp_packet_transport());
-          return dtls_transport->ice_transport()->GetIceRole();
-        }
+        auto dtls_transport = pc->LookupDtlsTransportByMidInternal(
+            transceiver->internal()->channel()->content_name());
+        return dtls_transport->ice_transport()->internal()->GetIceRole();
       }
     }
     RTC_NOTREACHED();
     return cricket::ICEROLE_UNKNOWN;
+  }
+
+  // Returns a list of (ufrag, pwd) pairs in the order that they appear in
+  // |description|, or the empty list if |description| is null.
+  std::vector<std::pair<std::string, std::string>> GetIceCredentials(
+      const SessionDescriptionInterface* description) {
+    std::vector<std::pair<std::string, std::string>> ice_credentials;
+    if (!description)
+      return ice_credentials;
+    const auto* desc = description->description();
+    for (const auto& content_info : desc->contents()) {
+      const auto* transport_info =
+          desc->GetTransportInfoByName(content_info.name);
+      if (transport_info) {
+        ice_credentials.push_back(
+            std::make_pair(transport_info->description.ice_ufrag,
+                           transport_info->description.ice_pwd));
+      }
+    }
+    return ice_credentials;
   }
 
   bool AddCandidateToFirstTransport(cricket::Candidate* candidate,
@@ -678,6 +697,130 @@ TEST_P(PeerConnectionIceTest, TwoTrickledCandidatesAddedToRemoteDescription) {
                       candidates[1]->candidate());
 }
 
+TEST_P(PeerConnectionIceTest, AsyncAddIceCandidateIsAddedToRemoteDescription) {
+  auto candidate = CreateLocalUdpCandidate(SocketAddress("1.1.1.1", 1111));
+
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(callee->SetRemoteDescription(caller->CreateOfferAndSetAsLocal()));
+
+  auto jsep_candidate =
+      callee->CreateJsepCandidateForFirstTransport(&candidate);
+  bool operation_completed = false;
+  callee->pc()->AddIceCandidate(std::move(jsep_candidate),
+                                [&operation_completed](RTCError result) {
+                                  EXPECT_TRUE(result.ok());
+                                  operation_completed = true;
+                                });
+  EXPECT_TRUE_WAIT(operation_completed, kWaitTimeout);
+
+  auto candidates = callee->GetIceCandidatesFromRemoteDescription();
+  ASSERT_EQ(1u, candidates.size());
+  EXPECT_PRED_FORMAT2(AssertCandidatesEqual, candidate,
+                      candidates[0]->candidate());
+}
+
+TEST_P(PeerConnectionIceTest,
+       AsyncAddIceCandidateCompletesImmediatelyIfNoPendingOperation) {
+  auto candidate = CreateLocalUdpCandidate(SocketAddress("1.1.1.1", 1111));
+
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(callee->SetRemoteDescription(caller->CreateOfferAndSetAsLocal()));
+
+  auto jsep_candidate =
+      callee->CreateJsepCandidateForFirstTransport(&candidate);
+  bool operation_completed = false;
+  callee->pc()->AddIceCandidate(
+      std::move(jsep_candidate),
+      [&operation_completed](RTCError result) { operation_completed = true; });
+  EXPECT_TRUE(operation_completed);
+}
+
+TEST_P(PeerConnectionIceTest,
+       AsyncAddIceCandidateCompletesWhenPendingOperationCompletes) {
+  auto candidate = CreateLocalUdpCandidate(SocketAddress("1.1.1.1", 1111));
+
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(callee->SetRemoteDescription(caller->CreateOfferAndSetAsLocal()));
+
+  // Chain an operation that will block AddIceCandidate() from executing.
+  rtc::scoped_refptr<MockCreateSessionDescriptionObserver> answer_observer(
+      new rtc::RefCountedObject<MockCreateSessionDescriptionObserver>());
+  callee->pc()->CreateAnswer(answer_observer, RTCOfferAnswerOptions());
+
+  auto jsep_candidate =
+      callee->CreateJsepCandidateForFirstTransport(&candidate);
+  bool operation_completed = false;
+  callee->pc()->AddIceCandidate(
+      std::move(jsep_candidate),
+      [&operation_completed](RTCError result) { operation_completed = true; });
+  // The operation will not be able to complete until we EXPECT_TRUE_WAIT()
+  // allowing CreateAnswer() to complete.
+  EXPECT_FALSE(operation_completed);
+  EXPECT_TRUE_WAIT(answer_observer->called(), kWaitTimeout);
+  // As soon as it does, AddIceCandidate() will execute without delay, so it
+  // must also have completed.
+  EXPECT_TRUE(operation_completed);
+}
+
+TEST_P(PeerConnectionIceTest,
+       AsyncAddIceCandidateFailsBeforeSetRemoteDescription) {
+  auto candidate = CreateLocalUdpCandidate(SocketAddress("1.1.1.1", 1111));
+
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  std::unique_ptr<IceCandidateInterface> jsep_candidate =
+      CreateIceCandidate(cricket::CN_AUDIO, 0, candidate);
+
+  bool operation_completed = false;
+  caller->pc()->AddIceCandidate(
+      std::move(jsep_candidate), [&operation_completed](RTCError result) {
+        EXPECT_FALSE(result.ok());
+        EXPECT_EQ(result.message(),
+                  std::string("Error processing ICE candidate"));
+        operation_completed = true;
+      });
+  EXPECT_TRUE_WAIT(operation_completed, kWaitTimeout);
+}
+
+TEST_P(PeerConnectionIceTest,
+       AsyncAddIceCandidateFailsIfPeerConnectionDestroyed) {
+  auto candidate = CreateLocalUdpCandidate(SocketAddress("1.1.1.1", 1111));
+
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(callee->SetRemoteDescription(caller->CreateOfferAndSetAsLocal()));
+
+  // Chain an operation that will block AddIceCandidate() from executing.
+  rtc::scoped_refptr<MockCreateSessionDescriptionObserver> answer_observer(
+      new rtc::RefCountedObject<MockCreateSessionDescriptionObserver>());
+  callee->pc()->CreateAnswer(answer_observer, RTCOfferAnswerOptions());
+
+  auto jsep_candidate =
+      callee->CreateJsepCandidateForFirstTransport(&candidate);
+  bool operation_completed = false;
+  callee->pc()->AddIceCandidate(
+      std::move(jsep_candidate), [&operation_completed](RTCError result) {
+        EXPECT_FALSE(result.ok());
+        EXPECT_EQ(
+            result.message(),
+            std::string(
+                "AddIceCandidate failed because the session was shut down"));
+        operation_completed = true;
+      });
+  // The operation will not be able to run until EXPECT_TRUE_WAIT(), giving us
+  // time to remove all references to the PeerConnection.
+  EXPECT_FALSE(operation_completed);
+  // This should delete the callee PC.
+  callee = nullptr;
+  EXPECT_TRUE_WAIT(operation_completed, kWaitTimeout);
+}
+
 TEST_P(PeerConnectionIceTest, LocalDescriptionUpdatedWhenContinualGathering) {
   const SocketAddress kLocalAddress("1.1.1.1", 0);
 
@@ -819,6 +962,209 @@ TEST_P(PeerConnectionIceTest, LaterAnswerHasSameIceCredentialsIfNoIceRestart) {
 
   EXPECT_EQ(answer_transport_desc->ice_ufrag, local_transport_desc->ice_ufrag);
   EXPECT_EQ(answer_transport_desc->ice_pwd, local_transport_desc->ice_pwd);
+}
+
+TEST_P(PeerConnectionIceTest, RestartIceGeneratesNewCredentials) {
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(caller->ExchangeOfferAnswerWith(callee.get()));
+  auto initial_ice_credentials =
+      GetIceCredentials(caller->pc()->local_description());
+  caller->pc()->RestartIce();
+  ASSERT_TRUE(caller->CreateOfferAndSetAsLocal());
+  auto restarted_ice_credentials =
+      GetIceCredentials(caller->pc()->local_description());
+  EXPECT_NE(initial_ice_credentials, restarted_ice_credentials);
+}
+
+TEST_P(PeerConnectionIceTest,
+       RestartIceWhileLocalOfferIsPendingGeneratesNewCredentialsInNextOffer) {
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(callee->SetRemoteDescription(caller->CreateOfferAndSetAsLocal()));
+  auto initial_ice_credentials =
+      GetIceCredentials(caller->pc()->local_description());
+  // ICE restart becomes needed while an O/A is pending and |caller| is the
+  // offerer.
+  caller->pc()->RestartIce();
+  ASSERT_TRUE(
+      caller->SetRemoteDescription(callee->CreateAnswerAndSetAsLocal()));
+  ASSERT_TRUE(caller->CreateOfferAndSetAsLocal());
+  auto restarted_ice_credentials =
+      GetIceCredentials(caller->pc()->local_description());
+  EXPECT_NE(initial_ice_credentials, restarted_ice_credentials);
+}
+
+TEST_P(PeerConnectionIceTest,
+       RestartIceWhileRemoteOfferIsPendingGeneratesNewCredentialsInNextOffer) {
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(caller->ExchangeOfferAnswerWith(callee.get()));
+  auto initial_ice_credentials =
+      GetIceCredentials(caller->pc()->local_description());
+  ASSERT_TRUE(caller->SetRemoteDescription(callee->CreateOfferAndSetAsLocal()));
+  // ICE restart becomes needed while an O/A is pending and |caller| is the
+  // answerer.
+  caller->pc()->RestartIce();
+  ASSERT_TRUE(
+      callee->SetRemoteDescription(caller->CreateAnswerAndSetAsLocal()));
+  ASSERT_TRUE(caller->CreateOfferAndSetAsLocal());
+  auto restarted_ice_credentials =
+      GetIceCredentials(caller->pc()->local_description());
+  EXPECT_NE(initial_ice_credentials, restarted_ice_credentials);
+}
+
+TEST_P(PeerConnectionIceTest, RestartIceTriggeredByRemoteSide) {
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(caller->ExchangeOfferAnswerWith(callee.get()));
+  auto initial_ice_credentials =
+      GetIceCredentials(caller->pc()->local_description());
+
+  // Remote restart and O/A exchange with |caller| as the answerer should
+  // restart ICE locally as well.
+  callee->pc()->RestartIce();
+  ASSERT_TRUE(callee->ExchangeOfferAnswerWith(caller.get()));
+
+  auto restarted_ice_credentials =
+      GetIceCredentials(caller->pc()->local_description());
+  EXPECT_NE(initial_ice_credentials, restarted_ice_credentials);
+}
+
+TEST_P(PeerConnectionIceTest, RestartIceCausesNegotiationNeeded) {
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(caller->ExchangeOfferAnswerWith(callee.get()));
+  caller->observer()->clear_negotiation_needed();
+  caller->pc()->RestartIce();
+  EXPECT_TRUE(caller->observer()->negotiation_needed());
+}
+
+// In Unified Plan, "onnegotiationneeded" is spec-compliant, including not
+// firing multipe times in a row, or firing when returning to the stable
+// signaling state if negotiation is still needed. In Plan B it fires any time
+// something changes. As such, some tests are SdpSemantics-specific.
+class PeerConnectionIceTestUnifiedPlan : public PeerConnectionIceBaseTest {
+ protected:
+  PeerConnectionIceTestUnifiedPlan()
+      : PeerConnectionIceBaseTest(SdpSemantics::kUnifiedPlan) {}
+};
+
+TEST_F(PeerConnectionIceTestUnifiedPlan,
+       RestartIceWhileLocalOfferIsPendingCausesNegotiationNeededWhenStable) {
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(callee->SetRemoteDescription(caller->CreateOfferAndSetAsLocal()));
+  // ICE restart becomes needed while an O/A is pending and |caller| is the
+  // offerer.
+  caller->observer()->clear_negotiation_needed();
+  caller->pc()->RestartIce();
+  // In Unified Plan, the event should not fire until we are back in the stable
+  // signaling state.
+  EXPECT_FALSE(caller->observer()->negotiation_needed());
+  ASSERT_TRUE(
+      caller->SetRemoteDescription(callee->CreateAnswerAndSetAsLocal()));
+  EXPECT_TRUE(caller->observer()->negotiation_needed());
+}
+
+TEST_F(PeerConnectionIceTestUnifiedPlan,
+       RestartIceWhileRemoteOfferIsPendingCausesNegotiationNeededWhenStable) {
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  // Establish initial credentials as the caller.
+  ASSERT_TRUE(caller->ExchangeOfferAnswerWith(callee.get()));
+  ASSERT_TRUE(caller->SetRemoteDescription(callee->CreateOfferAndSetAsLocal()));
+  // ICE restart becomes needed while an O/A is pending and |caller| is the
+  // answerer.
+  caller->observer()->clear_negotiation_needed();
+  caller->pc()->RestartIce();
+  // In Unified Plan, the event should not fire until we are back in the stable
+  // signaling state.
+  EXPECT_FALSE(caller->observer()->negotiation_needed());
+  ASSERT_TRUE(
+      callee->SetRemoteDescription(caller->CreateAnswerAndSetAsLocal()));
+  EXPECT_TRUE(caller->observer()->negotiation_needed());
+}
+
+TEST_F(PeerConnectionIceTestUnifiedPlan,
+       RestartIceTriggeredByRemoteSideCauseNegotiationNotNeeded) {
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(caller->ExchangeOfferAnswerWith(callee.get()));
+  // Local restart.
+  caller->pc()->RestartIce();
+  caller->observer()->clear_negotiation_needed();
+  // Remote restart and O/A exchange with |caller| as the answerer should
+  // restart ICE locally as well.
+  callee->pc()->RestartIce();
+  ASSERT_TRUE(callee->ExchangeOfferAnswerWith(caller.get()));
+  // Having restarted ICE by the remote offer, we do not need to renegotiate ICE
+  // credentials when back in the stable signaling state.
+  EXPECT_FALSE(caller->observer()->negotiation_needed());
+}
+
+TEST_F(PeerConnectionIceTestUnifiedPlan,
+       RestartIceTwiceDoesNotFireNegotiationNeededTwice) {
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(caller->ExchangeOfferAnswerWith(callee.get()));
+  caller->pc()->RestartIce();
+  EXPECT_TRUE(caller->observer()->negotiation_needed());
+  caller->observer()->clear_negotiation_needed();
+  caller->pc()->RestartIce();
+  EXPECT_FALSE(caller->observer()->negotiation_needed());
+}
+
+// In Plan B, "onnegotiationneeded" is not spec-compliant, firing based on if
+// something changed rather than if negotiation is needed. In Unified Plan it
+// fires according to spec. As such, some tests are SdpSemantics-specific.
+class PeerConnectionIceTestPlanB : public PeerConnectionIceBaseTest {
+ protected:
+  PeerConnectionIceTestPlanB()
+      : PeerConnectionIceBaseTest(SdpSemantics::kPlanB) {}
+};
+
+TEST_F(PeerConnectionIceTestPlanB,
+       RestartIceWhileOfferIsPendingCausesNegotiationNeededImmediately) {
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(callee->SetRemoteDescription(caller->CreateOfferAndSetAsLocal()));
+  caller->observer()->clear_negotiation_needed();
+  caller->pc()->RestartIce();
+  EXPECT_TRUE(caller->observer()->negotiation_needed());
+  caller->observer()->clear_negotiation_needed();
+  ASSERT_TRUE(
+      caller->SetRemoteDescription(callee->CreateAnswerAndSetAsLocal()));
+  // In Plan B, the event fired early so we don't expect it to fire now. This is
+  // not spec-compliant but follows the pattern of existing Plan B behavior.
+  EXPECT_FALSE(caller->observer()->negotiation_needed());
+}
+
+TEST_F(PeerConnectionIceTestPlanB,
+       RestartIceTwiceDoesFireNegotiationNeededTwice) {
+  auto caller = CreatePeerConnectionWithAudioVideo();
+  auto callee = CreatePeerConnectionWithAudioVideo();
+
+  ASSERT_TRUE(caller->ExchangeOfferAnswerWith(callee.get()));
+  caller->observer()->clear_negotiation_needed();
+  caller->pc()->RestartIce();
+  EXPECT_TRUE(caller->observer()->negotiation_needed());
+  caller->observer()->clear_negotiation_needed();
+  caller->pc()->RestartIce();
+  // In Plan B, the event fires every time something changed, even if we have
+  // already fired the event. This is not spec-compliant but follows the same
+  // pattern of existing Plan B behavior.
+  EXPECT_TRUE(caller->observer()->negotiation_needed());
 }
 
 // The following parameterized test verifies that if an offer is sent with a
@@ -975,7 +1321,7 @@ INSTANTIATE_TEST_SUITE_P(PeerConnectionIceTest,
                          Values(SdpSemantics::kPlanB,
                                 SdpSemantics::kUnifiedPlan));
 
-class PeerConnectionIceConfigTest : public testing::Test {
+class PeerConnectionIceConfigTest : public ::testing::Test {
  protected:
   void SetUp() override {
     pc_factory_ = CreatePeerConnectionFactory(
@@ -1014,8 +1360,7 @@ TEST_F(PeerConnectionIceConfigTest, SetStunCandidateKeepaliveInterval) {
       port_allocator_->stun_candidate_keepalive_interval();
   EXPECT_EQ(actual_stun_keepalive_interval.value_or(-1), 123);
   config.stun_candidate_keepalive_interval = 321;
-  RTCError error;
-  pc_->SetConfiguration(config, &error);
+  ASSERT_TRUE(pc_->SetConfiguration(config).ok());
   actual_stun_keepalive_interval =
       port_allocator_->stun_candidate_keepalive_interval();
   EXPECT_EQ(actual_stun_keepalive_interval.value_or(-1), 321);

@@ -17,21 +17,37 @@
 
 #include <stdint.h>
 #include <stdio.h>
+
 #include <vector>
 
 #include "api/scoped_refptr.h"
 #include "api/video/video_frame.h"
 #include "api/video/video_frame_buffer.h"
-#include "common_types.h"  // NOLINT(build/include)
+#include "rtc_base/system/rtc_export.h"
 
 namespace webrtc {
 
+enum class VideoType {
+  kUnknown,
+  kI420,
+  kIYUV,
+  kRGB24,
+  kABGR,
+  kARGB,
+  kARGB4444,
+  kRGB565,
+  kARGB1555,
+  kYUY2,
+  kYV12,
+  kUYVY,
+  kMJPEG,
+  kNV21,
+  kNV12,
+  kBGRA,
+};
+
 // This is the max PSNR value our algorithms can return.
 const double kPerfectPSNR = 48.0f;
-
-// TODO(nisse): Some downstream apps call CalcBufferSize with
-// ::webrtc::kI420 as the first argument. Delete after they are updated.
-const VideoType kI420 = VideoType::kI420;
 
 // Calculate the required buffer size.
 // Input:
@@ -118,7 +134,7 @@ void NV12Scale(uint8_t* tmp_buffer,
 // Helper class for directly converting and scaling NV12 to I420. The Y-plane
 // will be scaled directly to the I420 destination, which makes this faster
 // than separate NV12->I420 + I420->I420 scaling.
-class NV12ToI420Scaler {
+class RTC_EXPORT NV12ToI420Scaler {
  public:
   NV12ToI420Scaler();
   ~NV12ToI420Scaler();

@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "api/test/time_controller.h"
 #include "api/units/timestamp.h"
 #include "modules/include/module.h"
 #include "modules/utility/include/process_thread.h"
@@ -24,7 +25,6 @@
 #include "rtc_base/platform_thread_types.h"
 #include "rtc_base/synchronization/yield_policy.h"
 #include "rtc_base/thread_checker.h"
-#include "test/time_controller/time_controller.h"
 
 namespace webrtc {
 
@@ -60,16 +60,17 @@ class SimulatedTimeControllerImpl : public TaskQueueFactory,
   void Unregister(SimulatedSequenceRunner* runner);
 
  private:
-  // Returns runners in |runners_| that are ready for execution.
-  std::vector<SimulatedSequenceRunner*> GetNextReadyRunner(
-      Timestamp current_time) RTC_RUN_ON(thread_checker_);
-
   const rtc::PlatformThreadId thread_id_;
   rtc::ThreadChecker thread_checker_;
   rtc::CriticalSection time_lock_;
   Timestamp current_time_ RTC_GUARDED_BY(time_lock_);
   rtc::CriticalSection lock_;
   std::vector<SimulatedSequenceRunner*> runners_ RTC_GUARDED_BY(lock_);
+  // Used in RunReadyRunners() to keep track of ready runners that are to be
+  // processed in a round robin fashion. the reason it's a member is so that
+  // runners can removed from here by Unregister().
+  std::list<SimulatedSequenceRunner*> ready_runners_ RTC_GUARDED_BY(lock_);
+
   // Task queues on which YieldExecution has been called.
   std::unordered_set<TaskQueueBase*> yielded_ RTC_GUARDED_BY(thread_checker_);
 };
@@ -77,9 +78,9 @@ class SimulatedTimeControllerImpl : public TaskQueueFactory,
 
 // TimeController implementation using completely simulated time. Task queues
 // and process threads created by this controller will run delayed activities
-// when Sleep() is called. Overrides the global clock backing rtc::TimeMillis()
-// and rtc::TimeMicros(). Note that this is not thread safe since it modifies
-// global state.
+// when AdvanceTime() is called. Overrides the global clock backing
+// rtc::TimeMillis() and rtc::TimeMicros(). Note that this is not thread safe
+// since it modifies global state.
 class GlobalSimulatedTimeController : public TimeController {
  public:
   explicit GlobalSimulatedTimeController(Timestamp start_time);
@@ -89,14 +90,14 @@ class GlobalSimulatedTimeController : public TimeController {
   TaskQueueFactory* GetTaskQueueFactory() override;
   std::unique_ptr<ProcessThread> CreateProcessThread(
       const char* thread_name) override;
-  void Sleep(TimeDelta duration) override;
-  void InvokeWithControlledYield(std::function<void()> closure) override;
+  void AdvanceTime(TimeDelta duration) override;
 
  private:
-  rtc::ScopedFakeClock global_clock_;
+  rtc::ScopedBaseFakeClock global_clock_;
   // Provides simulated CurrentNtpInMilliseconds()
   SimulatedClock sim_clock_;
   sim_time_impl::SimulatedTimeControllerImpl impl_;
+  rtc::ScopedYieldPolicy yield_policy_;
 };
 }  // namespace webrtc
 

@@ -11,6 +11,7 @@
 #include "modules/video_coding/receiver.h"
 
 #include <assert.h>
+
 #include <cstdint>
 #include <cstdlib>
 #include <utility>
@@ -45,24 +46,11 @@ VCMReceiver::VCMReceiver(VCMTiming* timing,
       timing_(timing),
       render_wait_event_(std::move(receiver_event)),
       max_video_delay_ms_(kMaxVideoDelayMs) {
-  Reset();
+  jitter_buffer_.Start();
 }
 
 VCMReceiver::~VCMReceiver() {
   render_wait_event_->Set();
-}
-
-void VCMReceiver::Reset() {
-  rtc::CritScope cs(&crit_sect_);
-  if (!jitter_buffer_.Running()) {
-    jitter_buffer_.Start();
-  } else {
-    jitter_buffer_.Flush();
-  }
-}
-
-void VCMReceiver::UpdateRtt(int64_t rtt) {
-  jitter_buffer_.UpdateRtt(rtt);
 }
 
 int32_t VCMReceiver::InsertPacket(const VCMPacket& packet) {
@@ -85,11 +73,6 @@ int32_t VCMReceiver::InsertPacket(const VCMPacket& packet) {
     timing_->IncomingTimestamp(packet.timestamp, clock_->TimeInMilliseconds());
   }
   return VCM_OK;
-}
-
-void VCMReceiver::TriggerDecoderShutdown() {
-  jitter_buffer_.Stop();
-  render_wait_event_->Set();
 }
 
 VCMEncodedFrame* VCMReceiver::FrameForDecoding(uint16_t max_wait_time_ms,
@@ -196,25 +179,11 @@ void VCMReceiver::ReleaseFrame(VCMEncodedFrame* frame) {
   jitter_buffer_.ReleaseFrame(frame);
 }
 
-void VCMReceiver::SetNackMode(VCMNackMode nackMode,
-                              int64_t low_rtt_nack_threshold_ms,
-                              int64_t high_rtt_nack_threshold_ms) {
-  rtc::CritScope cs(&crit_sect_);
-  // Default to always having NACK enabled in hybrid mode.
-  jitter_buffer_.SetNackMode(nackMode, low_rtt_nack_threshold_ms,
-                             high_rtt_nack_threshold_ms);
-}
-
 void VCMReceiver::SetNackSettings(size_t max_nack_list_size,
                                   int max_packet_age_to_nack,
                                   int max_incomplete_time_ms) {
   jitter_buffer_.SetNackSettings(max_nack_list_size, max_packet_age_to_nack,
                                  max_incomplete_time_ms);
-}
-
-VCMNackMode VCMReceiver::NackMode() const {
-  rtc::CritScope cs(&crit_sect_);
-  return jitter_buffer_.nack_mode();
 }
 
 std::vector<uint16_t> VCMReceiver::NackList(bool* request_key_frame) {

@@ -10,16 +10,17 @@
 
 #include "modules/video_capture/windows/sink_filter_ds.h"
 
+#include <dvdmedia.h>  // VIDEOINFOHEADER2
+#include <initguid.h>
+
+#include <algorithm>
+#include <list>
+
 #include "rtc_base/arraysize.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/platform_thread.h"
 #include "rtc_base/string_utils.h"
-
-#include <dvdmedia.h>  // VIDEOINFOHEADER2
-#include <initguid.h>
-
-#include <algorithm>
 
 DEFINE_GUID(CLSID_SINKFILTER,
             0x88cdbbdc,
@@ -380,7 +381,7 @@ class MediaTypesEnum : public IEnumMediaTypes {
 }  // namespace
 
 CaptureInputPin::CaptureInputPin(CaptureSinkFilter* filter) {
-  capture_checker_.DetachFromThread();
+  capture_checker_.Detach();
   // No reference held to avoid circular references.
   info_.pFilter = filter;
   info_.dir = PINDIR_INPUT;
@@ -404,7 +405,7 @@ void CaptureInputPin::OnFilterActivated() {
   RTC_DCHECK_RUN_ON(&main_checker_);
   runtime_error_ = false;
   flushing_ = false;
-  capture_checker_.DetachFromThread();
+  capture_checker_.Detach();
   capture_thread_id_ = 0;
 }
 
@@ -784,7 +785,7 @@ STDMETHODIMP CaptureInputPin::ReceiveCanBlock() {
 
 //  ----------------------------------------------------------------------------
 
-CaptureSinkFilter::CaptureSinkFilter(VideoCaptureExternal* capture_observer)
+CaptureSinkFilter::CaptureSinkFilter(VideoCaptureImpl* capture_observer)
     : input_pin_(new ComRefCount<CaptureInputPin>(this)),
       capture_observer_(capture_observer) {}
 

@@ -18,6 +18,7 @@
 
 #include "absl/container/inlined_vector.h"
 #include "absl/types/optional.h"
+#include "api/fec_controller_override.h"
 #include "api/units/data_rate.h"
 #include "api/video/encoded_image.h"
 #include "api/video/video_bitrate_allocation.h"
@@ -86,6 +87,7 @@ class RTC_EXPORT VideoEncoder {
     int low;
     int high;
   };
+
   // Quality scaling is enabled if thresholds are provided.
   struct ScalingSettings {
    private:
@@ -121,8 +123,33 @@ class RTC_EXPORT VideoEncoder {
     ScalingSettings();
   };
 
+  // Bitrate limits for resolution.
+  struct ResolutionBitrateLimits {
+    ResolutionBitrateLimits(int frame_size_pixels,
+                            int min_start_bitrate_bps,
+                            int min_bitrate_bps,
+                            int max_bitrate_bps)
+        : frame_size_pixels(frame_size_pixels),
+          min_start_bitrate_bps(min_start_bitrate_bps),
+          min_bitrate_bps(min_bitrate_bps),
+          max_bitrate_bps(max_bitrate_bps) {}
+    // Size of video frame, in pixels, the bitrate thresholds are intended for.
+    int frame_size_pixels = 0;
+    // Recommended minimum bitrate to start encoding.
+    int min_start_bitrate_bps = 0;
+    // Recommended minimum bitrate.
+    int min_bitrate_bps = 0;
+    // Recommended maximum bitrate.
+    int max_bitrate_bps = 0;
+
+    bool operator==(const ResolutionBitrateLimits& rhs) const;
+    bool operator!=(const ResolutionBitrateLimits& rhs) const {
+      return !(*this == rhs);
+    }
+  };
+
   // Struct containing metadata about the encoder implementing this interface.
-  struct EncoderInfo {
+  struct RTC_EXPORT EncoderInfo {
     static constexpr uint8_t kMaxFramerateFraction =
         std::numeric_limits<uint8_t>::max();
 
@@ -130,6 +157,10 @@ class RTC_EXPORT VideoEncoder {
     EncoderInfo(const EncoderInfo&);
 
     ~EncoderInfo();
+
+    std::string ToString() const;
+    bool operator==(const EncoderInfo& rhs) const;
+    bool operator!=(const EncoderInfo& rhs) const { return !(*this == rhs); }
 
     // Any encoder implementation wishing to use the WebRTC provided
     // quality scaler must populate this field.
@@ -191,9 +222,27 @@ class RTC_EXPORT VideoEncoder {
     // with a 100% frame rate fraction.
     absl::InlinedVector<uint8_t, kMaxTemporalStreams>
         fps_allocation[kMaxSpatialLayers];
+
+    // Recommended bitrate limits for different resolutions.
+    std::vector<ResolutionBitrateLimits> resolution_bitrate_limits;
+
+    // If true, this encoder has internal support for generating simulcast
+    // streams. Otherwise, an adapter class will be needed.
+    // Even if true, the config provided to InitEncode() might not be supported,
+    // in such case the encoder should return
+    // WEBRTC_VIDEO_CODEC_ERR_SIMULCAST_PARAMETERS_NOT_SUPPORTED.
+    bool supports_simulcast;
   };
 
-  struct RateControlParameters {
+  struct RTC_EXPORT RateControlParameters {
+    RateControlParameters();
+    RateControlParameters(const VideoBitrateAllocation& bitrate,
+                          double framerate_fps);
+    RateControlParameters(const VideoBitrateAllocation& bitrate,
+                          double framerate_fps,
+                          DataRate bandwidth_allocation);
+    virtual ~RateControlParameters();
+
     // Target bitrate, per spatial/temporal layer.
     // A target bitrate of 0bps indicates a layer should not be encoded at all.
     VideoBitrateAllocation bitrate;
@@ -206,6 +255,51 @@ class RTC_EXPORT VideoEncoder {
     // |bitrate.get_sum_bps()|, but may be higher if the application is not
     // network constrained.
     DataRate bandwidth_allocation;
+
+    bool operator==(const RateControlParameters& rhs) const;
+    bool operator!=(const RateControlParameters& rhs) const;
+  };
+
+  struct LossNotification {
+    // The timestamp of the last decodable frame *prior* to the last received.
+    // (The last received - described below - might itself be decodable or not.)
+    uint32_t timestamp_of_last_decodable;
+    // The timestamp of the last received frame.
+    uint32_t timestamp_of_last_received;
+    // Describes whether the dependencies of the last received frame were
+    // all decodable.
+    // |false| if some dependencies were undecodable, |true| if all dependencies
+    // were decodable, and |nullopt| if the dependencies are unknown.
+    absl::optional<bool> dependencies_of_last_received_decodable;
+    // Describes whether the received frame was decodable.
+    // |false| if some dependency was undecodable or if some packet belonging
+    // to the last received frame was missed.
+    // |true| if all dependencies were decodable and all packets belonging
+    // to the last received frame were received.
+    // |nullopt| if no packet belonging to the last frame was missed, but the
+    // last packet in the frame was not yet received.
+    absl::optional<bool> last_received_decodable;
+  };
+
+  // Negotiated capabilities which the VideoEncoder may expect the other
+  // side to use.
+  struct Capabilities {
+    explicit Capabilities(bool loss_notification)
+        : loss_notification(loss_notification) {}
+    bool loss_notification;
+  };
+
+  struct Settings {
+    Settings(const Capabilities& capabilities,
+             int number_of_cores,
+             size_t max_payload_size)
+        : capabilities(capabilities),
+          number_of_cores(number_of_cores),
+          max_payload_size(max_payload_size) {}
+
+    Capabilities capabilities;
+    int number_of_cores;
+    size_t max_payload_size;
   };
 
   static VideoCodecVP8 GetDefaultVp8Settings();
@@ -214,10 +308,18 @@ class RTC_EXPORT VideoEncoder {
 
   virtual ~VideoEncoder() {}
 
+  // Set a FecControllerOverride, through which the encoder may override
+  // decisions made by FecController.
+  // TODO(bugs.webrtc.org/10769): Update downstream, then make pure-virtual.
+  virtual void SetFecControllerOverride(
+      FecControllerOverride* fec_controller_override);
+
   // Initialize the encoder with the information from the codecSettings
   //
   // Input:
   //          - codec_settings    : Codec settings
+  //          - settings          : Settings affecting the encoding itself.
+  // Input for deprecated version:
   //          - number_of_cores   : Number of cores available for the encoder
   //          - max_payload_size  : The maximum size each payload is allowed
   //                                to have. Usually MTU - overhead.
@@ -228,9 +330,15 @@ class RTC_EXPORT VideoEncoder {
   //                                  WEBRTC_VIDEO_CODEC_ERR_SIZE
   //                                  WEBRTC_VIDEO_CODEC_MEMORY
   //                                  WEBRTC_VIDEO_CODEC_ERROR
-  virtual int32_t InitEncode(const VideoCodec* codec_settings,
-                             int32_t number_of_cores,
-                             size_t max_payload_size) = 0;
+  // TODO(bugs.webrtc.org/10720): After updating downstream projects and posting
+  // an announcement to discuss-webrtc, remove the three-parameters variant
+  // and make the two-parameters variant pure-virtual.
+  /* RTC_DEPRECATED */ virtual int32_t InitEncode(
+      const VideoCodec* codec_settings,
+      int32_t number_of_cores,
+      size_t max_payload_size);
+  virtual int InitEncode(const VideoCodec* codec_settings,
+                         const VideoEncoder::Settings& settings);
 
   // Register an encode complete callback object.
   //
@@ -260,26 +368,10 @@ class RTC_EXPORT VideoEncoder {
   virtual int32_t Encode(const VideoFrame& frame,
                          const std::vector<VideoFrameType>* frame_types) = 0;
 
-  // DEPRECATED! Instead use the one below:
-  // void SetRateAllocation(const VideoBitrateAllocation&, DataRate, uint32)
-  // For now has a default implementation that call RTC_NOTREACHED().
-  // TODO(bugs.webrtc.org/10481): Remove this once all usage is gone.
-  virtual int32_t SetRates(uint32_t bitrate, uint32_t framerate);
-
-  // DEPRECATED! Instead, use void SetRates(const RateControlParameters&);
-  // For now has a default implementation that calls
-  // int32_t SetRates(uin32_t, uint32_t) with |allocation.get_sum_kbps()| and
-  // |framerate| as arguments. This will be removed.
-  // TODO(bugs.webrtc.org/10481): Remove this once all usage is gone.
-  virtual int32_t SetRateAllocation(const VideoBitrateAllocation& allocation,
-                                    uint32_t framerate);
-
   // Sets rate control parameters: bitrate, framerate, etc. These settings are
   // instantaneous (i.e. not moving averages) and should apply from now until
   // the next call to SetRates().
-  // Default implementation will call SetRateAllocation() with appropriate
-  // members of |parameters| as parameters.
-  virtual void SetRates(const RateControlParameters& parameters);
+  virtual void SetRates(const RateControlParameters& parameters) = 0;
 
   // Inform the encoder when the packet loss rate changes.
   //
@@ -290,6 +382,9 @@ class RTC_EXPORT VideoEncoder {
   //
   // Input:   - rtt_ms            : The new RTT, in milliseconds.
   virtual void OnRttUpdate(int64_t rtt_ms);
+
+  // Called when a loss notification is received.
+  virtual void OnLossNotification(const LossNotification& loss_notification);
 
   // Returns meta-data about the encoder, such as implementation name.
   // The output of this method may change during runtime. For instance if a

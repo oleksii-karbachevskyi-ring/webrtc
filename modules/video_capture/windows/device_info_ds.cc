@@ -10,12 +10,13 @@
 
 #include "modules/video_capture/windows/device_info_ds.h"
 
+#include <assert.h>
+#include <dvdmedia.h>
+
 #include "modules/video_capture/video_capture_config.h"
 #include "modules/video_capture/windows/help_functions_ds.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/string_utils.h"
-
-#include <dvdmedia.h>
 
 namespace webrtc {
 namespace videocapturemodule {
@@ -274,8 +275,8 @@ IBaseFilter* DeviceInfoDS::GetDeviceFilter(const char* deviceUniqueIdUTF8,
       }
       VariantClear(&varName);
       pBag->Release();
-      pM->Release();
     }
+    pM->Release();
   }
   return captureFilter;
 }
