@@ -65,6 +65,7 @@ class TrendlineEstimator : public DelayIncreaseDetectorInterface {
               int64_t send_time_ms,
               int64_t arrival_time_ms,
               size_t packet_size,
+              int size_delta,
               bool calculated_deltas) override;
 
   void UpdateTrendline(double recv_delta_ms,
@@ -122,6 +123,19 @@ class TrendlineEstimator : public DelayIncreaseDetectorInterface {
 
   RTC_DISALLOW_COPY_AND_ASSIGN(TrendlineEstimator);
 };
+
+class TrendlineDetectorFactory : public DetectorFactoryInterface {
+public:
+  TrendlineDetectorFactory(const WebRtcKeyValueConfig* key_value_config,
+                           NetworkStatePredictor* network_state_predictor);
+
+  DelayIncreaseDetectorInterface* Create() override;
+
+private:
+  const WebRtcKeyValueConfig* key_value_config_;
+  NetworkStatePredictor* network_state_predictor_;
+};
+
 }  // namespace webrtc
 
 #endif  // MODULES_CONGESTION_CONTROLLER_GOOG_CC_TRENDLINE_ESTIMATOR_H_

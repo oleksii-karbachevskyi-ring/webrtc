@@ -16,11 +16,14 @@
 
 #include "api/transport/field_trial_based_config.h"
 #include "modules/remote_bitrate_estimator/include/remote_bitrate_estimator.h"
+#include "modules/congestion_controller/goog_cc/trendline_estimator.h"
+#include "modules/remote_bitrate_estimator/kalman_detector.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/constructor_magic.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/thread_annotations.h"
 #include "system_wrappers/include/metrics.h"
+
 
 namespace webrtc {
 namespace {
@@ -69,6 +72,21 @@ uint32_t ConvertMsTo24Bits(int64_t time_ms) {
   return time_24_bits;
 }
 
+DetectorFactoryInterface* CreateDetectorFactory(const WebRtcKeyValueConfig* key_value_config) {
+  std::string trials_choice = key_value_config->Lookup("WebRTC-ReceiverSideDelayIncreaseDetector");
+  if (trials_choice.empty() || trials_choice == "Kalman") {
+    RTC_LOG(LS_ERROR) << "Creating Kalman DelayIncreaseDetector for Receiver Side CC";
+    return new KalmanDetectorFactory(key_value_config);
+  } else if (trials_choice == "Trendline") {
+    RTC_LOG(LS_ERROR) << "Creating Trendline DelayIncreaseDetector for Receiver Side CC";
+    return new TrendlineDetectorFactory(key_value_config, nullptr);
+  } else {
+    RTC_LOG(LS_ERROR) << "Wrong option used for WebRTC-ReceiverSideDelayIncreaseDetector \"" << trials_choice << "\", "
+                         "must be Trendline or Kalman";
+    return new KalmanDetectorFactory(key_value_config);
+  }
+}
+
 RemoteBitrateEstimatorAbsSendTime::~RemoteBitrateEstimatorAbsSendTime() =
     default;
 
@@ -96,8 +114,8 @@ RemoteBitrateEstimatorAbsSendTime::RemoteBitrateEstimatorAbsSendTime(
     : clock_(clock),
       observer_(observer),
       inter_arrival_(),
-      estimator_(),
-      detector_(&field_trials_),
+      detector_factory_(CreateDetectorFactory(&field_trials_)),
+      delay_increase_detector_(detector_factory_->Create()),
       incoming_bitrate_(kBitrateWindowMs, 8000),
       incoming_bitrate_initialized_(false),
       total_probes_received_(0),
@@ -286,7 +304,7 @@ void RemoteBitrateEstimatorAbsSendTime::IncomingPacketInfo(
 
     TimeoutStreams(now_ms);
     RTC_DCHECK(inter_arrival_.get());
-    RTC_DCHECK(estimator_.get());
+    RTC_DCHECK(delay_increase_detector_.get());
     ssrcs_[ssrc] = now_ms;
 
     // For now only try to detect probes while we don't have a valid estimate.
@@ -316,15 +334,12 @@ void RemoteBitrateEstimatorAbsSendTime::IncomingPacketInfo(
       if (ProcessClusters(now_ms) == ProbeResult::kBitrateUpdated)
         update_estimate = true;
     }
-    if (inter_arrival_->ComputeDeltas(timestamp, arrival_time_ms, now_ms,
+    bool calculated_deltas = inter_arrival_->ComputeDeltas(timestamp, arrival_time_ms, now_ms,
                                       payload_size, &ts_delta, &t_delta,
-                                      &size_delta)) {
-      double ts_delta_ms = (1000.0 * ts_delta) / (1 << kInterArrivalShift);
-      estimator_->Update(t_delta, ts_delta_ms, size_delta, detector_.State(),
-                         arrival_time_ms);
-      detector_.Detect(estimator_->offset(), ts_delta_ms,
-                       estimator_->num_of_deltas(), arrival_time_ms);
-    }
+                                      &size_delta);
+    double ts_delta_ms = (1000.0 * ts_delta) / (1 << kInterArrivalShift);
+    delay_increase_detector_->Update(t_delta, ts_delta_ms, send_time_ms, arrival_time_ms,
+                                     payload_size, size_delta, calculated_deltas);
 
     if (!update_estimate) {
       // Check if it's time for a periodic update or if we should update because
@@ -332,7 +347,7 @@ void RemoteBitrateEstimatorAbsSendTime::IncomingPacketInfo(
       if (last_update_ms_ == -1 ||
           now_ms - last_update_ms_ > remote_rate_.GetFeedbackInterval().ms()) {
         update_estimate = true;
-      } else if (detector_.State() == BandwidthUsage::kBwOverusing) {
+      } else if (delay_increase_detector_->State() == BandwidthUsage::kBwOverusing) {
         absl::optional<uint32_t> incoming_rate =
             incoming_bitrate_.Rate(arrival_time_ms);
         if (incoming_rate &&
@@ -348,7 +363,7 @@ void RemoteBitrateEstimatorAbsSendTime::IncomingPacketInfo(
       // We also have to update the estimate immediately if we are overusing
       // and the target bitrate is too high compared to what we are receiving.
       const RateControlInput input(
-          detector_.State(),
+          delay_increase_detector_->State(),
           OptionalRateFromOptionalBps(incoming_bitrate_.Rate(arrival_time_ms)));
       target_bitrate_bps =
           remote_rate_.Update(&input, Timestamp::ms(now_ms)).bps<uint32_t>();
@@ -382,7 +397,7 @@ void RemoteBitrateEstimatorAbsSendTime::TimeoutStreams(int64_t now_ms) {
     inter_arrival_.reset(
         new InterArrival((kTimestampGroupLengthMs << kInterArrivalShift) / 1000,
                          kTimestampToMs, true));
-    estimator_.reset(new OveruseEstimator(OverUseDetectorOptions()));
+    delay_increase_detector_.reset(detector_factory_->Create());
     // We deliberately don't reset the first_packet_time_ms_ here for now since
     // we only probe for bandwidth in the beginning of a call right now.
   }

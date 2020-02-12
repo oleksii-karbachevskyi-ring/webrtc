@@ -18,6 +18,8 @@ rtc_library("remote_bitrate_estimator") {
     "include/remote_bitrate_estimator.h",
     "inter_arrival.cc",
     "inter_arrival.h",
+    "kalman_detector.cc",
+    "kalman_detector.h",
     "overuse_detector.cc",
     "overuse_detector.h",
     "overuse_estimator.cc",

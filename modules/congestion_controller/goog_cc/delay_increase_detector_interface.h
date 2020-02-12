@@ -29,11 +29,18 @@ class DelayIncreaseDetectorInterface {
                       int64_t send_time_ms,
                       int64_t arrival_time_ms,
                       size_t packet_size,
+                      int size_delta,
                       bool calculated_deltas) = 0;
 
   virtual BandwidthUsage State() const = 0;
 
   RTC_DISALLOW_COPY_AND_ASSIGN(DelayIncreaseDetectorInterface);
+};
+
+class DetectorFactoryInterface {
+public:
+  virtual ~DetectorFactoryInterface() {}
+  virtual DelayIncreaseDetectorInterface* Create() = 0;
 };
 
 }  // namespace webrtc

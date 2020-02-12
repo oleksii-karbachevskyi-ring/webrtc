@@ -252,6 +252,7 @@ void TrendlineEstimator::Update(double recv_delta_ms,
                                 int64_t send_time_ms,
                                 int64_t arrival_time_ms,
                                 size_t packet_size,
+                                int /*size_delta*/,
                                 bool calculated_deltas) {
   if (calculated_deltas) {
     UpdateTrendline(recv_delta_ms, send_delta_ms, send_time_ms, arrival_time_ms,
@@ -326,6 +327,18 @@ void TrendlineEstimator::UpdateThreshold(double modified_trend,
   threshold_ += k * (fabs(modified_trend) - threshold_) * time_delta_ms;
   threshold_ = rtc::SafeClamp(threshold_, 6.f, 600.f);
   last_update_ms_ = now_ms;
+}
+
+
+TrendlineDetectorFactory::TrendlineDetectorFactory(const WebRtcKeyValueConfig* key_value_config,
+                                                   NetworkStatePredictor* network_state_predictor)
+  : key_value_config_(key_value_config)
+  , network_state_predictor_(network_state_predictor)
+{}
+
+DelayIncreaseDetectorInterface* TrendlineDetectorFactory::Create() {
+  return static_cast<DelayIncreaseDetectorInterface*>(
+    new TrendlineEstimator(key_value_config_, network_state_predictor_));
 }
 
 }  // namespace webrtc

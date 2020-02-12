@@ -21,6 +21,7 @@
 #include "api/rtc_event_log/rtc_event_log.h"
 #include "logging/rtc_event_log/events/rtc_event_bwe_update_delay_based.h"
 #include "modules/congestion_controller/goog_cc/trendline_estimator.h"
+#include "modules/remote_bitrate_estimator/kalman_detector.h"
 #include "modules/remote_bitrate_estimator/test/bwe_test_logging.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
@@ -43,6 +44,22 @@ constexpr uint32_t kFixedSsrc = 0;
 }  // namespace
 
 constexpr char BweIgnoreSmallPacketsSettings::kKey[];
+
+DetectorFactoryInterface* CreateDetectorFactory(const WebRtcKeyValueConfig* key_value_config,
+                                                NetworkStatePredictor* network_state_predictor) {
+  std::string trials_choice = key_value_config->Lookup("WebRTC-SenderSideDelayIncreaseDetector");
+  if (trials_choice.empty() || trials_choice == "Trendline") {
+    RTC_LOG(LS_ERROR) << "Creating Trendline DelayIncreaseDetector for Sender Side CC";
+    return new TrendlineDetectorFactory(key_value_config, network_state_predictor);
+  } else if (trials_choice == "Kalman") {
+    RTC_LOG(LS_ERROR) << "Creating Kalman DelayIncreaseDetector for Sender Side CC";
+    return new KalmanDetectorFactory(key_value_config);
+  } else {
+    RTC_LOG(LS_ERROR) << "Wrong option used for WebRTC-SenderSideDelayIncreaseDetector \"" << trials_choice << "\", "
+                         "must be Trendline or Kalman";
+    return new TrendlineDetectorFactory(key_value_config, network_state_predictor);
+  }
+}
 
 BweIgnoreSmallPacketsSettings::BweIgnoreSmallPacketsSettings(
     const WebRtcKeyValueConfig* key_value_config) {
@@ -83,8 +100,8 @@ DelayBasedBwe::DelayBasedBwe(const WebRtcKeyValueConfig* key_value_config,
       fraction_large_packets_(0.5),
       network_state_predictor_(network_state_predictor),
       inter_arrival_(),
-      delay_detector_(
-          new TrendlineEstimator(key_value_config_, network_state_predictor_)),
+      detector_factory_(CreateDetectorFactory(key_value_config_, network_state_predictor_)),
+      delay_detector_(detector_factory_->Create()),
       last_seen_packet_(Timestamp::MinusInfinity()),
       uma_recorded_(false),
       rate_control_(key_value_config, /*send_side=*/true),
@@ -158,8 +175,7 @@ void DelayBasedBwe::IncomingPacketFeedback(const PacketResult& packet_feedback,
     inter_arrival_.reset(
         new InterArrival((kTimestampGroupLengthMs << kInterArrivalShift) / 1000,
                          kTimestampToMs, true));
-    delay_detector_.reset(
-        new TrendlineEstimator(key_value_config_, network_state_predictor_));
+    delay_detector_.reset(detector_factory_->Create());
   }
   last_seen_packet_ = at_time;
 
@@ -200,7 +216,7 @@ void DelayBasedBwe::IncomingPacketFeedback(const PacketResult& packet_feedback,
   delay_detector_->Update(t_delta, ts_delta_ms,
                           packet_feedback.sent_packet.send_time.ms(),
                           packet_feedback.receive_time.ms(),
-                          packet_size.bytes(), calculated_deltas);
+                          packet_size.bytes(), size_delta, calculated_deltas);
 }
 
 DataRate DelayBasedBwe::TriggerOveruse(Timestamp at_time,

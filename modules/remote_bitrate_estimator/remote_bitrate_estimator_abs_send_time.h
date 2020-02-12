@@ -21,11 +21,10 @@
 
 #include "api/rtp_headers.h"
 #include "api/transport/field_trial_based_config.h"
+#include "modules/congestion_controller/goog_cc/delay_increase_detector_interface.h"
 #include "modules/remote_bitrate_estimator/aimd_rate_control.h"
 #include "modules/remote_bitrate_estimator/include/remote_bitrate_estimator.h"
 #include "modules/remote_bitrate_estimator/inter_arrival.h"
-#include "modules/remote_bitrate_estimator/overuse_detector.h"
-#include "modules/remote_bitrate_estimator/overuse_estimator.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/constructor_magic.h"
 #include "rtc_base/critical_section.h"
@@ -126,8 +125,10 @@ class RemoteBitrateEstimatorAbsSendTime : public RemoteBitrateEstimator {
   const FieldTrialBasedConfig field_trials_;
   RemoteBitrateObserver* const observer_;
   std::unique_ptr<InterArrival> inter_arrival_;
-  std::unique_ptr<OveruseEstimator> estimator_;
-  OveruseDetector detector_;
+
+  std::unique_ptr<DetectorFactoryInterface> detector_factory_;
+  std::unique_ptr<DelayIncreaseDetectorInterface> delay_increase_detector_;
+
   RateStatistics incoming_bitrate_;
   bool incoming_bitrate_initialized_;
   std::vector<int> recent_propagation_delta_ms_;

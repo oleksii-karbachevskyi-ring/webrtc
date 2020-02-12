@@ -110,6 +110,7 @@ class DelayBasedBwe {
 
   NetworkStatePredictor* network_state_predictor_;
   std::unique_ptr<InterArrival> inter_arrival_;
+  std::unique_ptr<DetectorFactoryInterface> detector_factory_;
   std::unique_ptr<DelayIncreaseDetectorInterface> delay_detector_;
   Timestamp last_seen_packet_;
   bool uma_recorded_;
