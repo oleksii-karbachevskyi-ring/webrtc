@@ -39,6 +39,18 @@ private:
   const WebRtcKeyValueConfig* key_value_config_;
 };
 
+class KalmanOverTrendlineDetectorFactory : public DetectorFactoryInterface {
+public:
+  KalmanOverTrendlineDetectorFactory(const WebRtcKeyValueConfig* key_value_config,
+                           NetworkStatePredictor* network_state_predictor);
+
+  DelayIncreaseDetectorInterface* Create() override;
+
+private:
+  const WebRtcKeyValueConfig* key_value_config_;
+  NetworkStatePredictor* network_state_predictor_;
+};
+
 }  // namespace webrtc
 
 #endif  // MODULES_REMOTE_BITRATE_ESTIMATOR_KALMAN_DETECTOR_H

@@ -17,12 +17,12 @@
 
 #include "absl/types/optional.h"
 #include "modules/remote_bitrate_estimator/include/bwe_defines.h"
+#include "modules/remote_bitrate_estimator/kalman_detector.h"
 #include "modules/remote_bitrate_estimator/test/bwe_test_logging.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/experiments/struct_parameters_parser.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/numerics/safe_minmax.h"
-
 namespace webrtc {
 
 namespace {
@@ -329,6 +329,37 @@ void TrendlineEstimator::UpdateThreshold(double modified_trend,
   last_update_ms_ = now_ms;
 }
 
+class TrendlineOverKalmanDetector : public DelayIncreaseDetectorInterface {
+public:
+  TrendlineOverKalmanDetector(const WebRtcKeyValueConfig* key_value_config, NetworkStatePredictor* network_state_predictor)
+    : trendline_detector_(key_value_config, network_state_predictor)
+    , kalman_detector_(OverUseDetectorOptions(), key_value_config)
+  { }
+
+  ~TrendlineOverKalmanDetector() override {}
+
+  void Update(double recv_delta_ms,
+              double send_delta_ms,
+              int64_t send_time_ms,
+              int64_t arrival_time_ms,
+              size_t packet_size,
+              int size_delta,
+              bool calculated_deltas) override {
+    trendline_detector_.Update(recv_delta_ms, send_delta_ms, send_time_ms, arrival_time_ms,
+                               packet_size, size_delta, calculated_deltas);
+    kalman_detector_.Update(recv_delta_ms, send_delta_ms, send_time_ms, arrival_time_ms,
+                            packet_size, size_delta, calculated_deltas);
+  }
+
+  BandwidthUsage State() const override {
+    return trendline_detector_.State();
+  }
+
+private:
+  TrendlineEstimator trendline_detector_;
+  KalmanDetector kalman_detector_;
+  RTC_DISALLOW_COPY_AND_ASSIGN(TrendlineOverKalmanDetector);
+};
 
 TrendlineDetectorFactory::TrendlineDetectorFactory(const WebRtcKeyValueConfig* key_value_config,
                                                    NetworkStatePredictor* network_state_predictor)
@@ -339,6 +370,17 @@ TrendlineDetectorFactory::TrendlineDetectorFactory(const WebRtcKeyValueConfig* k
 DelayIncreaseDetectorInterface* TrendlineDetectorFactory::Create() {
   return static_cast<DelayIncreaseDetectorInterface*>(
     new TrendlineEstimator(key_value_config_, network_state_predictor_));
+}
+
+TrendlineOverKalmanDetectorFactory::TrendlineOverKalmanDetectorFactory(const WebRtcKeyValueConfig* key_value_config,
+                                                                       NetworkStatePredictor* network_state_predictor)
+  : key_value_config_(key_value_config)
+  , network_state_predictor_(network_state_predictor)
+{}
+
+DelayIncreaseDetectorInterface* TrendlineOverKalmanDetectorFactory::Create() {
+  return static_cast<DelayIncreaseDetectorInterface*>(
+    new TrendlineOverKalmanDetector(key_value_config_, network_state_predictor_));
 }
 
 }  // namespace webrtc

@@ -80,6 +80,12 @@ DetectorFactoryInterface* CreateDetectorFactory(const WebRtcKeyValueConfig* key_
   } else if (trials_choice == "Trendline") {
     RTC_LOG(LS_ERROR) << "Creating Trendline DelayIncreaseDetector for Receiver Side CC";
     return new TrendlineDetectorFactory(key_value_config, nullptr);
+  } else if (trials_choice == "KoverT") {
+    RTC_LOG(LS_ERROR) << "Creating KalmanOverTrendline DelayIncreaseDetector for Receiver Side CC";
+    return new KalmanOverTrendlineDetectorFactory(key_value_config, nullptr);;
+  } else if (trials_choice == "ToverK") {
+    RTC_LOG(LS_ERROR) << "Creating TrendlineOverKalman DelayIncreaseDetector for Receiver Side CC";
+    return new TrendlineOverKalmanDetectorFactory(key_value_config, nullptr);
   } else {
     RTC_LOG(LS_ERROR) << "Wrong option used for WebRTC-ReceiverSideDelayIncreaseDetector \"" << trials_choice << "\", "
                          "must be Trendline or Kalman";

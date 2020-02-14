@@ -136,6 +136,18 @@ private:
   NetworkStatePredictor* network_state_predictor_;
 };
 
+class TrendlineOverKalmanDetectorFactory : public DetectorFactoryInterface {
+public:
+  TrendlineOverKalmanDetectorFactory(const WebRtcKeyValueConfig* key_value_config,
+                           NetworkStatePredictor* network_state_predictor);
+
+  DelayIncreaseDetectorInterface* Create() override;
+
+private:
+  const WebRtcKeyValueConfig* key_value_config_;
+  NetworkStatePredictor* network_state_predictor_;
+};
+
 }  // namespace webrtc
 
 #endif  // MODULES_CONGESTION_CONTROLLER_GOOG_CC_TRENDLINE_ESTIMATOR_H_
